@@ -36,7 +36,6 @@
   "extensionKind": [
     "ui"
   ],
-  "sideEffects": false,
   "activationEvents": [
     "onStartupFinished",
     "onCommand:type"
@@ -1199,6 +1198,7 @@
     "build-test": "gulp prepare-test",
     "commit-hash": "git rev-parse HEAD > out/version.txt",
     "test": "node ./out/test/runTest.js",
+    "test:production": "yarn build-test && yarn build && node ./out/test/runTest.js --production",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "prettier": "npx prettier --write .",
