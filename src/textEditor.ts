@@ -29,11 +29,14 @@ export class TextEditor {
 
     if (!letVSCodeHandleKeystrokes) {
       await editor.edit((editBuilder) => {
-        if (!at) {
-          at = editor.selection.active;
+        if (at) {
+          editBuilder.insert(at, text);
+        } else {
+          // IME commits can contain several characters and must reach every cursor.
+          for (const selection of editor.selections) {
+            editBuilder.insert(selection.active, text);
+          }
         }
-
-        editBuilder.insert(at, text);
       });
     } else {
       await vscode.commands.executeCommand('default:type', { text });

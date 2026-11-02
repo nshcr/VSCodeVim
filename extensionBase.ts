@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 
 import { ExCommandLine, SearchCommandLine } from './src/cmd_line/commandLine';
+import { Cursor } from './src/common/motion/cursor';
 import { configuration } from './src/configuration/configuration';
 import { Notation } from './src/configuration/notation';
 import { Globals } from './src/globals';
@@ -327,7 +328,7 @@ export async function activate(context: vscode.ExtensionContext, handleLocal: bo
           compositionState.composingText += args.text;
           if (mh.vimState.currentMode === Mode.Insert) {
             compositionState.insertedText = true;
-            void vscode.commands.executeCommand('default:type', { text: args.text });
+            await vscode.commands.executeCommand('default:type', { text: args.text });
           }
         } else {
           await mh.handleKeyEvent(args.text);
@@ -355,8 +356,9 @@ export async function activate(context: vscode.ExtensionContext, handleLocal: bo
               text: args.text,
               replaceCharCnt: args.replaceCharCnt,
             });
-            mh.vimState.cursorStopPosition = mh.vimState.editor.selection.start;
-            mh.vimState.cursorStartPosition = mh.vimState.editor.selection.start;
+            mh.vimState.cursors = mh.vimState.editor.selections.map((sel) =>
+              Cursor.fromSelection(sel),
+            );
           }
         } else {
           await vscode.commands.executeCommand('default:replacePreviousChar', {
@@ -384,8 +386,10 @@ export async function activate(context: vscode.ExtensionContext, handleLocal: bo
             text: '',
             replaceCharCnt: compositionState.composingText.length,
           });
-          mh.vimState.cursorStopPosition = mh.vimState.editor.selection.active;
-          mh.vimState.cursorStartPosition = mh.vimState.editor.selection.active;
+          // Native composition edits move every selection, including cursors later on the same line.
+          mh.vimState.cursors = mh.vimState.editor.selections.map((sel) =>
+            Cursor.fromSelection(sel),
+          );
           mh.internalSelectionsTracker.stopIgnoringIntermediateSelections();
         }
         const text = compositionState.composingText;
