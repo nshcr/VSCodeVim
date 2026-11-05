@@ -11,9 +11,9 @@ const waitFor = async (condition: () => boolean): Promise<void> => {
   }
 };
 
-const openEditor = async (): Promise<vscode.TextEditor> =>
+const openEditor = async (content = 'one\ntwo\nthree'): Promise<vscode.TextEditor> =>
   vscode.window.showTextDocument(
-    await vscode.workspace.openTextDocument({ content: 'one\ntwo\nthree', language: 'plaintext' }),
+    await vscode.workspace.openTextDocument({ content, language: 'plaintext' }),
   );
 
 export async function run(): Promise<void> {
@@ -249,6 +249,101 @@ export async function run(): Promise<void> {
         await waitFor(() => editor.document.getText() === '😀one\ntwo\nthree');
       },
     ),
+  );
+
+  mocha.suite.addTest(
+    new Mocha.Test(
+      'Production bundle: Insert exits on the base of a decomposed accent',
+      async () => {
+        const editor = await openEditor('abcdef');
+        await vscode.commands.executeCommand('type', { text: 'i' });
+        await vscode.commands.executeCommand('type', { text: 'e\u0301' });
+        await waitFor(() => editor.document.getText() === 'e\u0301abcdef');
+        await vscode.commands.executeCommand('extension.vim_escape');
+        await waitFor(() => editor.selection.active.character === 0);
+        await vscode.commands.executeCommand('type', { text: 'x' });
+        await waitFor(() => editor.document.getText() === 'abcdef');
+      },
+    ),
+  );
+
+  for (const [text, backspaces, expected] of [
+    ['e\u0301', 1, '!abcdef'],
+    ['👩\u200d💻', 2, '👩!abcdef'],
+  ] as const) {
+    mocha.suite.addTest(
+      new Mocha.Test(
+        `Production bundle: native Vim backspace for ${JSON.stringify(text)}`,
+        async () => {
+          const editor = await openEditor('abcdef');
+          await vscode.commands.executeCommand('type', { text: 'i' });
+          await vscode.commands.executeCommand('type', { text });
+          for (let i = 0; i < backspaces; i++) {
+            await vscode.commands.executeCommand('extension.vim_backspace');
+          }
+          await vscode.commands.executeCommand('type', { text: '!' });
+          await waitFor(() => editor.document.getText() === expected);
+        },
+      ),
+    );
+  }
+
+  mocha.suite.addTest(
+    new Mocha.Test('Production bundle: counted R ends on the last ZWJ component', async () => {
+      const editor = await openEditor('abcdef');
+      await vscode.commands.executeCommand('type', { text: '2' });
+      await vscode.commands.executeCommand('type', { text: 'R' });
+      await vscode.commands.executeCommand('type', { text: '👩\u200d💻' });
+      await vscode.commands.executeCommand('extension.vim_escape');
+      await waitFor(
+        () =>
+          editor.document.getText() === '👩\u200d💻👩\u200d💻' &&
+          editor.selection.active.character === 8,
+      );
+    }),
+  );
+
+  mocha.suite.addTest(
+    new Mocha.Test(
+      'Production bundle: one payload enters R before consuming composing marks',
+      async () => {
+        const editor = await openEditor('abcdef');
+        await vscode.commands.executeCommand('type', { text: 'Re\u0301' });
+        await vscode.commands.executeCommand('extension.vim_escape');
+        await waitFor(
+          () =>
+            editor.document.getText() === 'e\u0301cdef' && editor.selection.active.character === 0,
+        );
+      },
+    ),
+  );
+
+  mocha.suite.addTest(
+    new Mocha.Test(
+      'Production bundle: r composition keeps VS16 but consumes only the first component',
+      async () => {
+        const editor = await openEditor('abcdef');
+        await vscode.commands.executeCommand('type', { text: '2' });
+        await vscode.commands.executeCommand('type', { text: 'r' });
+        await vscode.commands.executeCommand('compositionStart');
+        await vscode.commands.executeCommand('type', { text: '🏳️\u200d🌈' });
+        await vscode.commands.executeCommand('compositionEnd');
+        await waitFor(
+          () => editor.document.getText() === '🏳️🏳️cdef' && editor.selection.active.character === 3,
+        );
+      },
+    ),
+  );
+
+  mocha.suite.addTest(
+    new Mocha.Test('Production bundle: x counts complete composing characters', async () => {
+      const editor = await openEditor('e\u0301a\u0308z');
+      await vscode.commands.executeCommand('type', { text: '2' });
+      await vscode.commands.executeCommand('type', { text: 'x' });
+      await waitFor(
+        () => editor.document.getText() === 'z' && editor.selection.active.character === 0,
+      );
+    }),
   );
 
   await new Promise<void>((resolve, reject) => {
