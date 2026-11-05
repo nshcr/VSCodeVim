@@ -78,14 +78,19 @@ class OpenAllFoldsRecursively extends CommandFold {
 
 @RegisterAction
 class AddFold extends BaseOperator {
-  override modes = [Mode.Normal, Mode.Visual];
+  override modes = [Mode.Normal, Mode.Visual, Mode.VisualLine];
   keys = ['z', 'f'];
 
   readonly commandName = 'editor.createFoldingRangeFromSelection';
 
   public async run(vimState: VimState, start: Position, end: Position): Promise<void> {
     const previousSelections = vimState.lastVisualSelection; // keep in case of Normal mode
-    vimState.editor.selection = new vscode.Selection(start, end);
+    // Vim includes the final line; VS Code excludes a selection ending at column zero.
+    const foldEnd =
+      end.line + 1 < vimState.document.lineCount
+        ? new Position(end.line + 1, 0)
+        : vimState.document.lineAt(end.line).range.end;
+    vimState.editor.selection = new vscode.Selection(start.getLineBegin(), foldEnd);
     await vscode.commands.executeCommand(this.commandName);
     vimState.lastVisualSelection = previousSelections;
     vimState.cursors = [Cursor.atPosition(start)];

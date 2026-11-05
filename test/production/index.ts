@@ -18,7 +18,48 @@ const openEditor = async (content = 'one\ntwo\nthree'): Promise<vscode.TextEdito
 
 export async function run(): Promise<void> {
   await vscode.extensions.getExtension('vscodevim.vim')!.activate();
-  const mocha = new Mocha({ color: true, timeout: 5000 });
+  const mocha = new Mocha({
+    color: true,
+    timeout: 5000,
+    grep: new RegExp(process.env.MOCHA_GREP || ''),
+  });
+
+  for (const { name, content, keys } of [
+    { name: 'zf2j includes the final line', keys: 'zf2j' },
+    { name: 'zf2k includes the final line', keys: '3Gzf2k' },
+    { name: 'Visual Line zf folds the selected lines', keys: 'V2jzf' },
+    { name: 'reversed Visual Line zf folds the selected lines', keys: '3GV2kzf' },
+    { name: 'Visual zf includes an endpoint at column zero', keys: 'v2jzf' },
+    {
+      name: 'zf includes an empty final selected line',
+      keys: 'zf2j',
+      content: 'one\ntwo\n\nafter',
+    },
+    { name: 'zf includes the last document line', keys: 'zf2j', content: 'one\ntwo\nthree' },
+  ]) {
+    mocha.suite.addTest(
+      new Mocha.Test(`Production bundle: folding ${name}`, async () => {
+        const editor = await openEditor(content ?? 'one\ntwo\nthree\nafter');
+        const originalText = editor.document.getText();
+        // Await the native folding model before creating a manual fold in a new editor.
+        await vscode.commands.executeCommand('editor.unfoldAll');
+        for (const text of keys) {
+          await vscode.commands.executeCommand('type', { text });
+        }
+        await waitFor(() => {
+          const ranges = editor.visibleRanges;
+          return (
+            ranges[0]?.start.line === 0 &&
+            ranges[0].end.line === 0 &&
+            (editor.document.lineCount === 3 ? ranges.length === 1 : ranges[1]?.start.line === 3)
+          );
+        });
+        assert.strictEqual(editor.document.getText(), originalText);
+        await vscode.commands.executeCommand('type', { text: 'l' });
+        await waitFor(() => editor.selection.isEmpty && editor.selection.active.character === 1);
+      }),
+    );
+  }
 
   for (const [key, selection] of [
     ['v', new vscode.Selection(0, 0, 0, 1)],
