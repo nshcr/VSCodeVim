@@ -424,6 +424,61 @@ export async function run(): Promise<void> {
     ),
   );
 
+  mocha.suite.addTest(
+    new Mocha.Test(
+      'Production bundle: Escape ends snippet navigation before normal editing',
+      async () => {
+        const editor = await openEditor('');
+        await vscode.commands.executeCommand('type', { text: 'i' });
+        await waitFor(() => editor.options.cursorStyle === vscode.TextEditorCursorStyle.Line);
+        await editor.insertSnippet(
+          new vscode.SnippetString('prefix ${1:first} ${2:second} suffix$0'),
+        );
+        await waitFor(() => editor.selection.isEqual(new vscode.Selection(0, 7, 0, 12)));
+        await vscode.commands.executeCommand('type', { text: 'one' });
+        await waitFor(() => editor.document.getText() === 'prefix one second suffix');
+        await vscode.commands.executeCommand('extension.vim_escape');
+        await waitFor(
+          () =>
+            editor.options.cursorStyle === vscode.TextEditorCursorStyle.Block &&
+            editor.selection.active.character === 9,
+        );
+        await vscode.commands.executeCommand('jumpToNextSnippetPlaceholder');
+        await vscode.commands.executeCommand('type', { text: 'hliX' });
+        await vscode.commands.executeCommand('extension.vim_escape');
+        await waitFor(
+          () =>
+            editor.document.getText() === 'prefix onXe second suffix' &&
+            editor.selection.active.character === 9,
+        );
+      },
+    ),
+  );
+
+  mocha.suite.addTest(
+    new Mocha.Test('Production bundle: current-word search escapes punctuation once', async () => {
+      const config = vscode.workspace.getConfiguration('vim');
+      const previous = config.inspect('iskeyword')?.globalValue;
+      try {
+        const separators = (
+          config.get<string>('iskeyword') ??
+          vscode.workspace.getConfiguration('editor').get<string>('wordSeparators')!
+        ).replace(/[.$]/g, '');
+        await config.update('iskeyword', separators, vscode.ConfigurationTarget.Global);
+        const editor = await openEditor('foo.bar fooXbar foo.bar foo.bar');
+        await vscode.commands.executeCommand('type', { text: '*' });
+        await waitFor(() => editor.selection.active.character === 16);
+        await vscode.commands.executeCommand('type', { text: 'n' });
+        await waitFor(() => editor.selection.active.character === 24);
+        await vscode.commands.executeCommand('type', { text: 'N' });
+        await waitFor(() => editor.selection.active.character === 16);
+        assert.strictEqual(editor.document.getText(), 'foo.bar fooXbar foo.bar foo.bar');
+      } finally {
+        await config.update('iskeyword', previous, vscode.ConfigurationTarget.Global);
+      }
+    }),
+  );
+
   await new Promise<void>((resolve, reject) => {
     mocha.run((failures) => {
       if (failures > 0) reject(new Error(`${failures} production bundle tests failed`));
