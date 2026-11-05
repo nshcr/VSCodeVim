@@ -16,6 +16,7 @@ import { StatusBar } from './src/statusBar';
 import { taskQueue } from './src/taskQueue';
 import { Logger } from './src/util/logger';
 import { SpecialKeys } from './src/util/specialKeys';
+import { nextVimCharacterIndex } from './src/util/unicode';
 import { VSCodeContext } from './src/util/vscodeContext';
 import { exCommandParser } from './src/vimscript/exCommandParser';
 
@@ -26,6 +27,29 @@ let lastClosedModeHandler: ModeHandler | null = null;
 interface ICodeKeybinding {
   after?: string[];
   commands?: Array<{ command: string; args: any[] }>;
+}
+
+async function handleTextInput(
+  mh: ModeHandler,
+  text: string,
+  alreadyRemapped = false,
+): Promise<void> {
+  for (let offset = 0; offset < text.length;) {
+    // An earlier character in this same payload can enter Insert or Replace.
+    const end =
+      mh.vimState.currentMode === Mode.Insert
+        ? text.length
+        : mh.vimState.currentMode === Mode.Replace
+          ? offset + String.fromCodePoint(text.codePointAt(offset)!).length
+          : nextVimCharacterIndex(text, offset);
+    const character = text.slice(offset, end);
+    if (alreadyRemapped) {
+      await mh.handleMultipleKeyEvents([character]);
+    } else {
+      await mh.handleKeyEvent(character);
+    }
+    offset = end;
+  }
 }
 
 export async function getAndUpdateModeHandler(
@@ -331,13 +355,7 @@ export async function activate(context: vscode.ExtensionContext, handleLocal: bo
             await vscode.commands.executeCommand('default:type', { text: args.text });
           }
         } else {
-          if (mh.vimState.currentMode === Mode.Replace) {
-            for (const character of args.text) {
-              await mh.handleKeyEvent(character);
-            }
-          } else {
-            await mh.handleKeyEvent(args.text);
-          }
+          await handleTextInput(mh, args.text);
         }
       }
     });
@@ -449,7 +467,7 @@ export async function activate(context: vscode.ExtensionContext, handleLocal: bo
             );
           }
         } else {
-          await mh.handleMultipleKeyEvents(Array.from(text));
+          await handleTextInput(mh, text, true);
         }
       }
       compositionState.reset();

@@ -7,6 +7,7 @@ import { VimError } from '../../error';
 import { RecordedState } from '../../state/recordedState';
 import { VimState } from '../../state/vimState';
 import { StatusBar } from '../../statusBar';
+import { previousVimCharacterIndex } from '../../util/unicode';
 import { getCursorsAfterSync, isHighSurrogate, isLowSurrogate } from '../../util/util';
 import { BaseMovement } from '../baseMotion';
 import { MoveDown, MoveLeft, MoveRight, MoveUp } from '../motion';
@@ -425,6 +426,25 @@ export class BackspaceInInsertMode extends BaseCommand {
   }
 
   public override async exec(position: Position, vimState: VimState): Promise<void> {
+    // VS Code deletes grapheme clusters (or individual marks), while Vim deletes
+    // one base plus Mn/Me suffixes. Select that range before native deletion so
+    // ASCII cursors retain VS Code's indentation and auto-closing pair behavior.
+    const selections = vimState.editor.selections;
+    const deletionSelections = selections.map((selection) => {
+      if (!selection.isEmpty || selection.active.character === 0) {
+        return selection;
+      }
+      const line = vimState.document.lineAt(selection.active.line).text;
+      const start = previousVimCharacterIndex(line, selection.active.character);
+      const text = line.slice(start, selection.active.character);
+      if (/[^\x00-\x7f]/u.test(text)) {
+        return new vscode.Selection(new Position(selection.active.line, start), selection.active);
+      }
+      return selection;
+    });
+    if (deletionSelections.some((selection, index) => selection !== selections[index])) {
+      vimState.editor.selections = deletionSelections;
+    }
     vimState.recordedState.transformer.vscodeCommand('deleteLeft');
   }
 }

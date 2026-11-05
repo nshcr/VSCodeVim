@@ -5,6 +5,7 @@ import { DotCommandStatus, Mode, visualBlockGetTopLeftPosition } from '../../mod
 import { ModeDataFor } from '../../mode/modeData';
 import { VimState } from '../../state/vimState';
 import { TextEditor } from '../../textEditor';
+import { previousVimCharacterIndex, splitVimCharacters } from '../../util/unicode';
 import { BaseCommand, RegisterAction } from '../base';
 import { BaseMovement } from '../baseMotion';
 import { MoveDown, MoveLeft, MoveRight, MoveUp } from '../motion';
@@ -32,10 +33,11 @@ export class ReplaceCharacter extends BaseCommand {
     const endPos = position.getSurrogateAwareRight(vimState.document, timesToRepeat);
 
     // Refuse if fewer than `timesToRepeat` characters remain on the line.
-    // `endPos` is codepoint-aware, so count codepoints (not UTF-16 code units)
-    // in the spanned range — a surrogate pair counts as a single character.
+    // Count Vim editing characters, including any composing suffixes.
     const line = vimState.document.lineAt(position).text;
-    if ([...line.slice(position.character, endPos.character)].length < timesToRepeat) {
+    if (
+      splitVimCharacters(line.slice(position.character, endPos.character)).length < timesToRepeat
+    ) {
       return;
     }
 
@@ -215,13 +217,25 @@ class ExitReplaceMode extends BaseCommand {
         .map((change) => change.after)
         .join('')
         .repeat(timesToRepeat - 1);
-      vimState.recordedState.transformer.replace(
-        new Range(
-          position,
-          position.getSurrogateAwareRight(vimState.document, [...newText].length),
-        ),
-        newText,
+      const range = new Range(
+        position,
+        position.getSurrogateAwareRight(vimState.document, [...newText].length),
       );
+      const lastLine = newText.split('\n').at(-1)!;
+      const lastCharacterLength =
+        lastLine.length - previousVimCharacterIndex(lastLine, lastLine.length);
+      const prefix = newText.slice(0, newText.length - lastCharacterLength).split('\n');
+      // An insertion at EOL moves the native selection to its end. A replacement
+      // leaves it at the start; both must finish on the last replayed Vim character.
+      const diff = range.isEmpty
+        ? PositionDiff.offset({ character: -lastCharacterLength })
+        : prefix.length === 1
+          ? PositionDiff.offset({ character: prefix[0].length })
+          : PositionDiff.exactCharacter({
+              lineOffset: prefix.length - 1,
+              character: prefix.at(-1)!.length,
+            });
+      vimState.recordedState.transformer.replace(range, newText, diff);
     } else {
       vimState.cursorStopPosition = vimState.cursorStopPosition.getSurrogateAwareLeft(
         vimState.document,
