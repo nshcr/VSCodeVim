@@ -28,16 +28,22 @@ export class TextEditor {
     letVSCodeHandleKeystrokes ??= text.length === 1;
 
     if (!letVSCodeHandleKeystrokes) {
-      await editor.edit((editBuilder) => {
+      const applied = await editor.edit((editBuilder) => {
         if (at) {
           editBuilder.insert(at, text);
         } else {
-          // IME commits can contain several characters and must reach every cursor.
+          // Match native typing: replace each selection, including multi-character IME commits.
           for (const selection of editor.selections) {
-            editBuilder.insert(selection.active, text);
+            editBuilder.replace(selection, text);
           }
         }
       });
+      if (applied && !at) {
+        // TextEditor.edit preserves selected replacement ranges; typing leaves cursors at their ends.
+        editor.selections = editor.selections.map(
+          (selection) => new vscode.Selection(selection.end, selection.end),
+        );
+      }
     } else {
       await vscode.commands.executeCommand('default:type', { text });
     }
