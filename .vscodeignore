@@ -10,6 +10,7 @@
 src/**
 build/**
 test/**
+testing/**
 typings/**
 out/src/**
 out/test/**
