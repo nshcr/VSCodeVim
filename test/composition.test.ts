@@ -90,6 +90,147 @@ suite('IME composition', () => {
     assertCursors([0, 4], [1, 4]);
   });
 
+  test('commits a candidate replacing preedit on both sides of the caret (#10111)', async () => {
+    await insertAt([0, 0], [1, 0]);
+    await command('compositionStart');
+    await command('type', { text: 'hh' });
+    await command('compositionType', {
+      text: 'hh提示',
+      replacePrevCharCnt: 2,
+      replaceNextCharCnt: 0,
+      positionDelta: -2,
+    });
+    await command('compositionType', {
+      text: '哈哈',
+      replacePrevCharCnt: 2,
+      replaceNextCharCnt: 2,
+      positionDelta: 0,
+    });
+    await command('compositionEnd');
+    assertEqualLines(['哈哈one', '哈哈two', 'three']);
+    assertCursors([0, 2], [1, 2]);
+  });
+
+  test('cancels marked text after the caret without replaying it (#10120)', async () => {
+    await insertAt([0, 0]);
+    await command('compositionStart');
+    await command('type', { text: '\u200b' });
+    await command('compositionType', {
+      text: '',
+      replacePrevCharCnt: 0,
+      replaceNextCharCnt: 0,
+      positionDelta: -1,
+    });
+    await command('compositionType', {
+      text: '',
+      replacePrevCharCnt: 0,
+      replaceNextCharCnt: 1,
+      positionDelta: 0,
+    });
+    await command('compositionEnd');
+    assertEqualLines(['one', 'two', 'three']);
+    assertCursors([0, 0]);
+  });
+
+  test('tracks insertion inside preedit and preserves the IME caret', async () => {
+    await insertAt([0, 0]);
+    await command('compositionStart');
+    await command('type', { text: 'ab' });
+    await command('compositionType', {
+      text: '',
+      replacePrevCharCnt: 0,
+      replaceNextCharCnt: 0,
+      positionDelta: -1,
+    });
+    await command('type', { text: 'X' });
+    await command('compositionEnd');
+    assertEqualLines(['aXbone', 'two', 'three']);
+    assertCursors([0, 2]);
+    await command('type', { text: '!' });
+    assertEqualLines(['aX!bone', 'two', 'three']);
+  });
+
+  test('supports compositionType as the first preedit event and commits an emoji', async () => {
+    await insertAt([0, 3], [0, 0]);
+    await command('compositionStart');
+    await command('compositionType', {
+      text: 'hh提示',
+      replacePrevCharCnt: 0,
+      replaceNextCharCnt: 0,
+      positionDelta: -2,
+    });
+    await command('compositionType', {
+      text: '😀',
+      replacePrevCharCnt: 2,
+      replaceNextCharCnt: 2,
+      positionDelta: 0,
+    });
+    await command('compositionEnd');
+    assertEqualLines(['😀one😀', 'two', 'three']);
+    assertCursors([0, 7], [0, 2]);
+  });
+
+  test('does not write Korean preedit into the document in Normal mode (#9863)', async () => {
+    await command('compositionStart');
+    await command('type', { text: 'ㅎ' });
+    await command('compositionType', {
+      text: '한',
+      replacePrevCharCnt: 1,
+      replaceNextCharCnt: 0,
+      positionDelta: -1,
+    });
+    await command('compositionType', {
+      text: '',
+      replacePrevCharCnt: 0,
+      replaceNextCharCnt: 0,
+      positionDelta: 1,
+    });
+    await command('compositionEnd');
+    assertEqualLines(['one', 'two', 'three']);
+    assert.strictEqual(modeHandler.vimState.currentMode, Mode.Normal);
+  });
+
+  test('undoes and redoes a compositionType commit as inserted text', async () => {
+    await insertAt([0, 0]);
+    await command('compositionStart');
+    await command('type', { text: 'hh' });
+    await command('compositionType', {
+      text: '哈哈',
+      replacePrevCharCnt: 2,
+      replaceNextCharCnt: 0,
+      positionDelta: 0,
+    });
+    await command('compositionEnd');
+    await modeHandler.handleMultipleKeyEvents(['<Esc>', 'u']);
+    assertEqualLines(['one', 'two', 'three']);
+    await modeHandler.handleKeyEvent('<C-r>');
+    assertEqualLines(['哈哈one', 'two', 'three']);
+  });
+
+  test('keeps composition updates in the Ex command line (#9975)', async () => {
+    await modeHandler.handleMultipleKeyEvents([':', 's', '/']);
+    await command('compositionStart');
+    await command('type', { text: 'zhong' });
+    await command('compositionType', {
+      text: '中文',
+      replacePrevCharCnt: 5,
+      replaceNextCharCnt: 0,
+      positionDelta: -1,
+    });
+    await command('compositionType', {
+      text: '',
+      replacePrevCharCnt: 0,
+      replaceNextCharCnt: 0,
+      positionDelta: 1,
+    });
+    await command('compositionEnd');
+    assertEqualLines(['one', 'two', 'three']);
+    assert.strictEqual(modeHandler.vimState.modeData.mode, Mode.CommandlineInProgress);
+    if (modeHandler.vimState.modeData.mode === Mode.CommandlineInProgress) {
+      assert.strictEqual(modeHandler.vimState.modeData.commandLine.text, 's/中文');
+    }
+  });
+
   for (const positions of [
     [[0, 0]],
     [

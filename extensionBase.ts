@@ -325,7 +325,7 @@ export async function activate(context: vscode.ExtensionContext, handleLocal: bo
       const mh = await getAndUpdateModeHandler();
       if (mh) {
         if (compositionState.isInComposition) {
-          compositionState.composingText += args.text;
+          compositionState.update(args.text);
           if (mh.vimState.currentMode === Mode.Insert) {
             compositionState.insertedText = true;
             await vscode.commands.executeCommand('default:type', { text: args.text });
@@ -345,11 +345,7 @@ export async function activate(context: vscode.ExtensionContext, handleLocal: bo
         const mh = await getAndUpdateModeHandler();
         if (mh) {
           if (compositionState.isInComposition) {
-            compositionState.composingText =
-              compositionState.composingText.substr(
-                0,
-                compositionState.composingText.length - args.replaceCharCnt,
-              ) + args.text;
+            compositionState.update(args.text, args.replaceCharCnt);
           }
           if (compositionState.insertedText) {
             await vscode.commands.executeCommand('default:replacePreviousChar', {
@@ -370,8 +366,41 @@ export async function activate(context: vscode.ExtensionContext, handleLocal: bo
     },
   );
 
+  overrideCommand(
+    context,
+    'compositionType',
+    async (args: {
+      text: string;
+      replacePrevCharCnt: number;
+      replaceNextCharCnt: number;
+      positionDelta: number;
+    }) => {
+      taskQueue.enqueueTask(async () => {
+        const mh = await getAndUpdateModeHandler();
+        if (!mh || !compositionState.isInComposition) {
+          await vscode.commands.executeCommand('default:compositionType', args);
+          return;
+        }
+        compositionState.update(
+          args.text,
+          args.replacePrevCharCnt,
+          args.replaceNextCharCnt,
+          args.positionDelta,
+        );
+        if (mh.vimState.currentMode === Mode.Insert) {
+          compositionState.insertedText = true;
+          await vscode.commands.executeCommand('default:compositionType', args);
+          mh.vimState.cursors = mh.vimState.editor.selections.map((sel) =>
+            Cursor.fromSelection(sel),
+          );
+        }
+      });
+    },
+  );
+
   overrideCommand(context, 'compositionStart', async () => {
     taskQueue.enqueueTask(async () => {
+      compositionState.reset();
       compositionState.isInComposition = true;
     });
   });
@@ -382,19 +411,37 @@ export async function activate(context: vscode.ExtensionContext, handleLocal: bo
       if (mh) {
         if (compositionState.insertedText) {
           mh.internalSelectionsTracker.startIgnoringIntermediateSelections();
-          await vscode.commands.executeCommand('default:replacePreviousChar', {
-            text: '',
-            replaceCharCnt: compositionState.composingText.length,
-          });
-          // Native composition edits move every selection, including cursors later on the same line.
-          mh.vimState.cursors = mh.vimState.editor.selections.map((sel) =>
-            Cursor.fromSelection(sel),
-          );
-          mh.internalSelectionsTracker.stopIgnoringIntermediateSelections();
+          try {
+            await vscode.commands.executeCommand('default:compositionType', {
+              text: '',
+              replacePrevCharCnt: compositionState.composingTextPosition,
+              replaceNextCharCnt:
+                compositionState.composingText.length - compositionState.composingTextPosition,
+              positionDelta: 0,
+            });
+            // Native edits also move cursors later on the same line.
+            mh.vimState.cursors = mh.vimState.editor.selections.map((sel) =>
+              Cursor.fromSelection(sel),
+            );
+          } finally {
+            mh.internalSelectionsTracker.stopIgnoringIntermediateSelections();
+          }
         }
         const text = compositionState.composingText;
         if (compositionState.insertedText) {
           await mh.handleMultipleKeyEvents([text]);
+          const positionDelta = compositionState.composingTextPosition - text.length;
+          if (positionDelta !== 0) {
+            await vscode.commands.executeCommand('default:compositionType', {
+              text: '',
+              replacePrevCharCnt: 0,
+              replaceNextCharCnt: 0,
+              positionDelta,
+            });
+            mh.vimState.cursors = mh.vimState.editor.selections.map((sel) =>
+              Cursor.fromSelection(sel),
+            );
+          }
         } else {
           await mh.handleMultipleKeyEvents(text.split(''));
         }
