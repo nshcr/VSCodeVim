@@ -180,10 +180,11 @@ export async function activate(context: vscode.ExtensionContext, handleLocal: bo
 
     const mh = ModeHandlerMap.get(event.document.uri);
     if (mh) {
+      const nativeHistoryChange = mh.vimState.historyTracker.recordNativeHistoryChange(event);
       // Change from VSCode editor should set document.isDirty to true but they initially don't!
       // There is a timing issue in VSCode codebase between when the isDirty flag is set and
       // when registered callbacks are fired. https://github.com/Microsoft/vscode/issues/11339
-      if (mh.vimState.currentMode === Mode.Insert) {
+      if (mh.vimState.currentMode === Mode.Insert && !nativeHistoryChange) {
         mh.vimState.historyTracker.currentContentChanges.push(...event.contentChanges);
       }
     }

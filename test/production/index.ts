@@ -204,8 +204,11 @@ export async function run(): Promise<void> {
         await vscode.commands.executeCommand('type', { text: '😀中' });
         await vscode.commands.executeCommand('type', { text: 'X' });
         await vscode.commands.executeCommand('extension.vim_escape');
-        await waitFor(() => editor.document.getText() === '😀中X\ntwo\nthree');
-        await waitFor(() => editor.options.cursorStyle === vscode.TextEditorCursorStyle.Block);
+        await waitFor(
+          () =>
+            editor.document.getText() === '😀中X\ntwo\nthree' &&
+            editor.selection.active.character === 3,
+        );
         assert.strictEqual(editor.selection.active.character, 3);
         await vscode.commands.executeCommand('type', { text: 'u' });
         await waitFor(() => editor.document.getText() === 'one\ntwo\nthree');
@@ -477,6 +480,131 @@ export async function run(): Promise<void> {
         await config.update('iskeyword', previous, vscode.ConfigurationTarget.Global);
       }
     }),
+  );
+
+  const insertUndoFixture = async (): Promise<vscode.TextEditor> => {
+    const editor = await openEditor('ab');
+    for (const [text, expected] of [
+      ['iX', 'Xab'],
+      ['iY', 'YXab'],
+    ]) {
+      await vscode.commands.executeCommand('type', { text });
+      await vscode.commands.executeCommand('extension.vim_escape');
+      await waitFor(
+        () =>
+          editor.document.getText() === expected &&
+          editor.options.cursorStyle === vscode.TextEditorCursorStyle.Block,
+      );
+    }
+    return editor;
+  };
+
+  mocha.suite.addTest(
+    new Mocha.Test('Production bundle: native undo aligns an entire Vim typing group', async () => {
+      const editor = await insertUndoFixture();
+      await vscode.commands.executeCommand('undo');
+      await waitFor(() => editor.document.getText() === 'ab');
+      await vscode.commands.executeCommand('type', { text: 'u' });
+      await vscode.commands.executeCommand('extension.vim_ctrl+r');
+      await waitFor(() => editor.document.getText() === 'Xab');
+      await vscode.commands.executeCommand('extension.vim_ctrl+r');
+      await waitFor(() => editor.document.getText() === 'YXab');
+    }),
+  );
+
+  mocha.suite.addTest(
+    new Mocha.Test(
+      'Production bundle: native undo of Vim u preserves the original history',
+      async () => {
+        const editor = await insertUndoFixture();
+        await vscode.commands.executeCommand('type', { text: 'u' });
+        await waitFor(() => editor.document.getText() === 'Xab');
+        await vscode.commands.executeCommand('undo');
+        await waitFor(() => editor.document.getText() === 'YXab');
+        await vscode.commands.executeCommand('type', { text: 'u' });
+        await waitFor(() => editor.document.getText() === 'Xab');
+        await vscode.commands.executeCommand('type', { text: 'u' });
+        await waitFor(() => editor.document.getText() === 'ab');
+      },
+    ),
+  );
+
+  mocha.suite.addTest(
+    new Mocha.Test('Production bundle: unmatched native undo preserves native redo', async () => {
+      const editor = await openEditor('ab');
+      await vscode.commands.executeCommand('type', { text: 'iX' });
+      await waitFor(() => editor.document.getText() === 'Xab');
+      assert.ok(await editor.edit((builder) => builder.insert(new vscode.Position(0, 1), 'Y')));
+      await vscode.commands.executeCommand('extension.vim_escape');
+      await waitFor(
+        () =>
+          editor.document.getText() === 'XYab' &&
+          editor.options.cursorStyle === vscode.TextEditorCursorStyle.Block,
+      );
+      await vscode.commands.executeCommand('undo');
+      await waitFor(() => editor.document.getText() === 'Xab');
+      await vscode.commands.executeCommand('type', { text: 'u' });
+      await vscode.commands.executeCommand('extension.vim_ctrl+r');
+      await vscode.commands.executeCommand('redo');
+      await waitFor(() => editor.document.getText() === 'XYab');
+    }),
+  );
+
+  mocha.suite.addTest(
+    new Mocha.Test(
+      'Production bundle: dot cannot restore input cancelled by native undo',
+      async () => {
+        const editor = await openEditor('ab');
+        await vscode.commands.executeCommand('type', { text: 'iX' });
+        await vscode.commands.executeCommand('extension.vim_escape');
+        await waitFor(
+          () =>
+            editor.document.getText() === 'Xab' &&
+            editor.options.cursorStyle === vscode.TextEditorCursorStyle.Block,
+        );
+        await vscode.commands.executeCommand('type', { text: 'iY' });
+        await waitFor(() => editor.document.getText() === 'YXab');
+        await vscode.commands.executeCommand('extension.vim_ctrl+g');
+        await vscode.commands.executeCommand('type', { text: 'u' });
+        // A visible input after the undo-point command proves those queued Vim
+        // commands completed before invoking the independent native undo command.
+        await vscode.commands.executeCommand('type', { text: 'W' });
+        await waitFor(() => editor.document.getText() === 'YWXab');
+        await vscode.commands.executeCommand('undo');
+        await waitFor(() => editor.document.getText() === 'ab');
+        await vscode.commands.executeCommand('type', { text: 'Z' });
+        await vscode.commands.executeCommand('extension.vim_escape');
+        await waitFor(
+          () =>
+            editor.document.getText() === 'Zab' &&
+            editor.options.cursorStyle === vscode.TextEditorCursorStyle.Block,
+        );
+        await vscode.commands.executeCommand('type', { text: '$.' });
+        await waitFor(() => editor.document.getText() === 'ZaZb');
+      },
+    ),
+  );
+
+  mocha.suite.addTest(
+    new Mocha.Test(
+      'Production bundle: ordinary edits after native undo stay independently undoable',
+      async () => {
+        const editor = await openEditor('ab');
+        assert.ok(await editor.edit((builder) => builder.insert(new vscode.Position(0, 0), 'X')));
+        await vscode.commands.executeCommand('type', { text: '$' });
+        await waitFor(() => editor.selection.active.character === 2);
+        assert.ok(await editor.edit((builder) => builder.insert(new vscode.Position(0, 0), 'Y')));
+        await vscode.commands.executeCommand('type', { text: '0' });
+        await waitFor(() => editor.selection.active.character === 0);
+        await vscode.commands.executeCommand('undo');
+        await waitFor(() => editor.document.getText() === 'Xab');
+        assert.ok(await editor.edit((builder) => builder.delete(new vscode.Range(0, 0, 0, 1))));
+        await vscode.commands.executeCommand('type', { text: 'u' });
+        await waitFor(() => editor.document.getText() === 'Xab');
+        await vscode.commands.executeCommand('type', { text: 'u' });
+        await waitFor(() => editor.document.getText() === 'ab');
+      },
+    ),
   );
 
   await new Promise<void>((resolve, reject) => {

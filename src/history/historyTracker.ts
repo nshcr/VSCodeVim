@@ -23,6 +23,7 @@ import { StatusBar } from '../statusBar';
 import { Logger } from '../util/logger';
 import { VimState } from './../state/vimState';
 import { TextEditor } from './../textEditor';
+import { findNativeHistoryIndex } from './nativeHistory';
 
 const diffEngine = new DiffMatchPatch.diff_match_patch();
 diffEngine.Diff_Timeout = 1; // 1 second
@@ -95,6 +96,24 @@ class DocumentChange {
   public get afterRange(): vscode.Range {
     return new vscode.Range(this.start, this.start.advancePositionByText(this.after));
   }
+}
+
+function documentChanges(before: string, after: string): DocumentChange[] {
+  const diffs = diffEngine.diff_main(before, after);
+  diffEngine.diff_cleanupEfficiency(diffs);
+  const changes: DocumentChange[] = [];
+  let position = new Position(0, 0);
+  for (const [kind, text] of diffs) {
+    if (kind === DiffMatchPatch.DIFF_INSERT) {
+      changes.push(DocumentChange.insert(position, text));
+    } else if (kind === DiffMatchPatch.DIFF_DELETE) {
+      changes.push(DocumentChange.delete(position, text));
+    }
+    if (kind !== DiffMatchPatch.DIFF_DELETE) {
+      position = position.advancePositionByText(text);
+    }
+  }
+  return changes;
 }
 
 interface IMarkBase {
@@ -261,6 +280,16 @@ class UndoStack {
     return this.historySteps.length;
   }
 
+  public getSteps(): readonly HistoryStep[] {
+    return this.historySteps;
+  }
+
+  public reset(marks: IMark[]): void {
+    this.historySteps = [];
+    this.currentStepIndex = -1;
+    this.initialMarks = marks;
+  }
+
   /**
    * @returns the current HistoryStep, or undefined if nothing's been done yet
    */
@@ -353,6 +382,11 @@ class ChangeList {
   private readonly changeLocations: Position[] = [];
   private index: number | undefined;
 
+  public clear(): void {
+    this.changeLocations.length = 0;
+    this.index = undefined;
+  }
+
   public addChangePosition(position: Position) {
     if (this.changeLocations.at(-1)?.line === position.line) {
       this.changeLocations[this.changeLocations.length - 1] = position;
@@ -401,6 +435,12 @@ export class HistoryTracker {
 
   private readonly changeList = new ChangeList();
 
+  private nativeHistoryBoundary = false;
+  private nativeInsertChange = false;
+  private pendingNativeChanges: Array<{ text: string; versionNumber: number; rebase: boolean }> =
+    [];
+  private pendingNativeTextLength = 0;
+
   /**
    * The state of the document the last time HistoryTracker.addChange() or HistoryTracker.ignoreChange() was called.
    * This is used to avoid retrieiving the document text and doing a full diff when it isn't necessary.
@@ -430,6 +470,86 @@ export class HistoryTracker {
     return this.vimState.editor?.document.version ?? -1;
   }
 
+  /** Capture the native result now, before a later ordinary edit changes it. */
+  public recordNativeHistoryChange(event: vscode.TextDocumentChangeEvent): boolean {
+    if (
+      event.document !== this.vimState.editor?.document ||
+      (event.reason !== vscode.TextDocumentChangeReason.Undo &&
+        event.reason !== vscode.TextDocumentChangeReason.Redo)
+    ) {
+      return false;
+    }
+    const text = event.document.getText();
+    const snapshot = { text, versionNumber: event.document.version, rebase: false };
+    // Bound retained snapshots as well as the replay work. If events arrive
+    // faster than Vim keys, retain a safe baseline rather than an unbounded queue.
+    if (
+      this.pendingNativeChanges.length >= 32 ||
+      this.pendingNativeTextLength + text.length > 16 * 1024 * 1024
+    ) {
+      snapshot.rebase = true;
+      this.pendingNativeChanges = [];
+      this.pendingNativeTextLength = 0;
+    }
+    this.pendingNativeChanges.push(snapshot);
+    this.pendingNativeTextLength += text.length;
+    this.nativeInsertChange ||= this.vimState.currentMode === Mode.Insert;
+    this.currentContentChanges = [];
+    return true;
+  }
+
+  public consumeNativeInsertChange(): boolean {
+    const changed = this.nativeInsertChange;
+    this.nativeInsertChange = false;
+    return changed;
+  }
+
+  private reconcileNativeHistory(): void {
+    const maxTextLength = Math.floor(
+      (16 * 1024 * 1024) / Math.max(1, this.pendingNativeChanges.length),
+    );
+    for (const snapshot of this.pendingNativeChanges) {
+      const result = snapshot.rebase
+        ? { kind: 'incomplete' as const }
+        : findNativeHistoryIndex(
+            this.undoStack.getSteps(),
+            this.undoStack.getCurrentHistoryStepIndex(),
+            this.previousDocumentState.text,
+            snapshot.text,
+            { maxTextLength },
+          );
+      if (result.kind === 'matched') {
+        while (this.undoStack.getCurrentHistoryStepIndex() > result.index) {
+          this.undoStack.stepBackward();
+        }
+        while (this.undoStack.getCurrentHistoryStepIndex() < result.index) {
+          this.undoStack.stepForward();
+        }
+      } else {
+        // Native groups can end inside a Vim step or at an ambiguous repeated
+        // state. Never record that undo as a new forward edit: u would reapply
+        // the very text the user just removed. Only Vim history is rebased;
+        // the native editor history and document remain untouched.
+        const marks =
+          this.getAllMarksInDocument(this.vimState.document).length === 0
+            ? []
+            : this.updateAndReturnMarks(
+                this.vimState.document,
+                documentChanges(this.previousDocumentState.text, snapshot.text),
+                new Position(0, 0).advancePositionByText(snapshot.text),
+              );
+        this.undoStack.reset(marks);
+        this.changeList.clear();
+        this.nativeHistoryBoundary = true;
+        Logger.warn(`Rebased Vim history after native undo/redo: ${result.kind}`);
+      }
+      this.nextStepCursorsAtStart = undefined;
+      this.previousDocumentState = { text: snapshot.text, versionNumber: snapshot.versionNumber };
+    }
+    this.pendingNativeChanges = [];
+    this.pendingNativeTextLength = 0;
+  }
+
   /**
    * Marks refer to relative locations in the document, rather than absolute ones.
    *
@@ -437,7 +557,11 @@ export class HistoryTracker {
    * the same character when the user does a document edit that would move the
    * text that was marked.
    */
-  private updateAndReturnMarks(document: vscode.TextDocument): IMark[] {
+  private updateAndReturnMarks(
+    document: vscode.TextDocument,
+    changes = this.undoStack.getCurrentHistoryStep()?.changes ?? [],
+    docEnd = TextEditor.getDocumentEnd(document),
+  ): IMark[] {
     const previousMarks = this.getAllMarksInDocument(document);
     const newMarks: IMark[] = [];
 
@@ -446,7 +570,7 @@ export class HistoryTracker {
       newMarks.push({ ...mark });
     }
 
-    for (const change of this.undoStack.getCurrentHistoryStep()?.changes ?? []) {
+    for (const change of changes) {
       for (const newMark of newMarks) {
         // Run through each character added/deleted, and see if it could have
         // affected the position of this mark.
@@ -508,7 +632,6 @@ export class HistoryTracker {
 
     // Ensure the position of every mark is within the range of the document.
 
-    const docEnd = TextEditor.getDocumentEnd(this.vimState.document);
     for (const mark of newMarks) {
       if (mark.position.isAfter(docEnd)) {
         mark.position = docEnd;
@@ -691,6 +814,7 @@ export class HistoryTracker {
    * Determines what changed by diffing the document against what it used to look like.
    */
   public addChange(force: boolean = false): boolean {
+    this.reconcileNativeHistory();
     if (this.getDocumentVersion() === this.previousDocumentState.versionNumber) {
       return false;
     }
@@ -712,6 +836,7 @@ export class HistoryTracker {
 
     const newText = this.getDocumentText();
     if (newText === this.previousDocumentState.text) {
+      this.previousDocumentState.versionNumber = this.getDocumentVersion();
       return false;
     }
 
@@ -725,27 +850,8 @@ export class HistoryTracker {
 
     // Couldn't we also ditch this diffing approach entirely and just use `TextDocumentContentChangeEvent`s?
 
-    const diffs = diffEngine.diff_main(this.previousDocumentState.text, newText);
-    diffEngine.diff_cleanupEfficiency(diffs);
-
-    let currentPosition = new Position(0, 0);
-
-    for (const diff of diffs) {
-      const [whatHappened, text] = diff;
-      const added = whatHappened === DiffMatchPatch.DIFF_INSERT;
-      const removed = whatHappened === DiffMatchPatch.DIFF_DELETE;
-
-      if (added || removed) {
-        this.undoStack.pushChange(
-          added
-            ? DocumentChange.insert(currentPosition, text)
-            : DocumentChange.delete(currentPosition, text),
-        );
-      }
-
-      if (!removed) {
-        currentPosition = currentPosition.advancePositionByText(text);
-      }
+    for (const change of documentChanges(this.previousDocumentState.text, newText)) {
+      this.undoStack.pushChange(change);
     }
 
     this.previousDocumentState = {
@@ -762,6 +868,8 @@ export class HistoryTracker {
    * the HistoryTracker.
    */
   public ignoreChange(): void {
+    this.pendingNativeChanges = [];
+    this.pendingNativeTextLength = 0;
     this.previousDocumentState = {
       text: this.getDocumentText(),
       versionNumber: this.getDocumentVersion(),
@@ -804,9 +912,15 @@ export class HistoryTracker {
    * @returns the new cursor positions, or undefined if there are no steps to undo
    */
   public async goBackHistoryStep(): Promise<void> {
+    this.reconcileNativeHistory();
     const step = this.undoStack.stepBackward();
     if (step === undefined) {
-      StatusBar.setText(this.vimState, 'Already at oldest change');
+      StatusBar.setText(
+        this.vimState,
+        this.nativeHistoryBoundary
+          ? 'Vim undo stopped at an unmatched native history boundary'
+          : 'Already at oldest change',
+      );
       return;
     }
 
@@ -839,6 +953,7 @@ export class HistoryTracker {
    * @returns the new cursor positions, or undefined if there are no steps to redo
    */
   public async goForwardHistoryStep(): Promise<void> {
+    this.reconcileNativeHistory();
     const step = this.undoStack.stepForward();
     if (step === undefined) {
       StatusBar.setText(this.vimState, 'Already at newest change');
@@ -884,6 +999,7 @@ export class HistoryTracker {
    * determine the line of the change, so this behavior is also compensated.
    */
   public async goBackHistoryStepsOnLine(): Promise<void> {
+    this.reconcileNativeHistory();
     const currentHistoryStep = this.undoStack.getCurrentHistoryStep();
     if (currentHistoryStep === undefined) {
       return;

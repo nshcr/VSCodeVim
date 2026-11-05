@@ -625,6 +625,26 @@ export class ModeHandler implements vscode.Disposable, IModeHandler {
       this.vimState.historyTracker.finishCurrentStep();
     }
 
+    const nativeInsertChange = this.vimState.historyTracker.consumeNativeInsertChange();
+    if (nativeInsertChange && this.vimState.currentMode === Mode.Insert) {
+      // Like Insert-mode cursor movement, native history navigation starts a
+      // fresh insertion for dot. Previously flushed actions may contain text
+      // that native Undo cancelled; replace the recording without mutating
+      // action objects already shared with a macro or a completed insertion.
+      const insertion = new RecordedState();
+      insertion.actionsRun = [new Insert()];
+      insertion.isInsertion = true;
+      const pendingChanges = this.vimState.historyTracker.currentContentChanges;
+      if (pendingChanges.length > 0) {
+        // Keep ordinary edits delivered after the native snapshot.
+        const contentChange = new DocumentContentChangeAction(pendingChanges[0].range.start);
+        contentChange.addChanges(pendingChanges, this.vimState.cursorStopPosition);
+        insertion.actionsRun.push(contentChange);
+        this.vimState.historyTracker.currentContentChanges = [];
+      }
+      this.vimState.recordedState = insertion;
+    }
+
     const recordedState = this.vimState.recordedState;
     recordedState.actionKeys.push(key);
     void VSCodeContext.set('vim.command', recordedState.commandString);
