@@ -346,6 +346,84 @@ export async function run(): Promise<void> {
     }),
   );
 
+  for (const [initial, expected, character] of [
+    ['𝒯𝒰𝒯𝒰', '𝒰𝒯𝒯𝒰', 2],
+    ['e\u0301a\u0308z', 'a\u0308e\u0301z', 2],
+    ['😀ab', 'a😀b', 1],
+    ['👩\u200d💻z', '\u200d👩💻z', 1],
+  ] as const) {
+    mocha.suite.addTest(
+      new Mocha.Test(`Production bundle: xp preserves Vim boundaries in ${initial}`, async () => {
+        const editor = await openEditor(initial);
+        await vscode.commands.executeCommand('type', { text: 'xp' });
+        await waitFor(
+          () =>
+            editor.document.getText() === expected &&
+            editor.selection.active.character === character,
+        );
+      }),
+    );
+  }
+
+  mocha.suite.addTest(
+    new Mocha.Test(
+      'Production bundle: visual put replaces the full composing character',
+      async () => {
+        const editor = await openEditor('Xe\u0301az');
+        await vscode.commands.executeCommand('type', { text: 'xvp' });
+        await waitFor(
+          () => editor.document.getText() === 'Xaz' && editor.selection.active.character === 0,
+        );
+      },
+    ),
+  );
+
+  mocha.suite.addTest(
+    new Mocha.Test('Production bundle: configured digraphs override built-ins', async () => {
+      const config = vscode.workspace.getConfiguration('vim');
+      const previous = config.inspect('digraphs')?.globalValue;
+      try {
+        await config.update(
+          'digraphs',
+          { 'a*': ['a', 97], '*b': ['B', 66] },
+          vscode.ConfigurationTarget.Global,
+        );
+        const editor = await openEditor('');
+        await vscode.commands.executeCommand('type', { text: 'i' });
+        for (const text of ['a*', '*a', 'b*', '*b']) {
+          await vscode.commands.executeCommand('extension.vim_ctrl+k');
+          for (const key of text) {
+            await vscode.commands.executeCommand('type', { text: key });
+          }
+        }
+        await waitFor(
+          () => editor.document.getText() === 'aaβB' && editor.selection.active.character === 4,
+        );
+      } finally {
+        await config.update('digraphs', previous, vscode.ConfigurationTarget.Global);
+      }
+    }),
+  );
+
+  mocha.suite.addTest(
+    new Mocha.Test(
+      'Production bundle: macro undo and redo preserve nested insertions',
+      async () => {
+        const editor = await openEditor('12');
+        await vscode.commands.executeCommand('type', { text: 'qaiABC' });
+        await vscode.commands.executeCommand('extension.vim_escape');
+        await vscode.commands.executeCommand('type', { text: 'hhiXY' });
+        await vscode.commands.executeCommand('extension.vim_escape');
+        await vscode.commands.executeCommand('type', { text: 'q@au' });
+        await vscode.commands.executeCommand('extension.vim_ctrl+r');
+        await waitFor(
+          () =>
+            editor.document.getText() === 'XXYABCYABC12' && editor.selection.active.character === 1,
+        );
+      },
+    ),
+  );
+
   await new Promise<void>((resolve, reject) => {
     mocha.run((failures) => {
       if (failures > 0) reject(new Error(`${failures} production bundle tests failed`));
