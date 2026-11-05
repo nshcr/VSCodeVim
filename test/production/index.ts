@@ -180,6 +180,77 @@ export async function run(): Promise<void> {
     ),
   );
 
+  mocha.suite.addTest(
+    new Mocha.Test(
+      'Production bundle: exiting emoji insertion leaves a whole character for x',
+      async () => {
+        const editor = await openEditor();
+        await vscode.commands.executeCommand('type', { text: 'i' });
+        await vscode.commands.executeCommand('type', { text: '😀' });
+        await waitFor(() => editor.document.getText() === '😀one\ntwo\nthree');
+        await vscode.commands.executeCommand('extension.vim_escape');
+        await vscode.commands.executeCommand('type', { text: 'x' });
+        await waitFor(() => editor.document.getText() === 'one\ntwo\nthree');
+      },
+    ),
+  );
+
+  mocha.suite.addTest(
+    new Mocha.Test(
+      'Production bundle: Replace processes a multi-character Unicode payload',
+      async () => {
+        const editor = await openEditor();
+        await vscode.commands.executeCommand('type', { text: 'R' });
+        await vscode.commands.executeCommand('type', { text: '😀中' });
+        await vscode.commands.executeCommand('type', { text: 'X' });
+        await vscode.commands.executeCommand('extension.vim_escape');
+        await waitFor(() => editor.document.getText() === '😀中X\ntwo\nthree');
+        await waitFor(() => editor.options.cursorStyle === vscode.TextEditorCursorStyle.Block);
+        assert.strictEqual(editor.selection.active.character, 3);
+        await vscode.commands.executeCommand('type', { text: 'u' });
+        await waitFor(() => editor.document.getText() === 'one\ntwo\nthree');
+      },
+    ),
+  );
+
+  mocha.suite.addTest(
+    new Mocha.Test('Production bundle: counted r accepts a composed emoji', async () => {
+      const editor = await openEditor();
+      await vscode.commands.executeCommand('type', { text: '2' });
+      await vscode.commands.executeCommand('type', { text: 'r' });
+      await vscode.commands.executeCommand('compositionStart');
+      await vscode.commands.executeCommand('type', { text: '😀' });
+      await vscode.commands.executeCommand('compositionEnd');
+      await waitFor(
+        () =>
+          editor.document.getText() === '😀😀e\ntwo\nthree' &&
+          editor.selection.active.character === 2,
+      );
+      assert.strictEqual(editor.selection.active.character, 2);
+    }),
+  );
+
+  mocha.suite.addTest(
+    new Mocha.Test(
+      'Production bundle: counted emoji insertion leaves the final emoji intact',
+      async () => {
+        const editor = await openEditor();
+        await vscode.commands.executeCommand('type', { text: '2' });
+        await vscode.commands.executeCommand('type', { text: 'i' });
+        await vscode.commands.executeCommand('type', { text: '😀' });
+        await vscode.commands.executeCommand('extension.vim_escape');
+        await waitFor(
+          () =>
+            editor.document.getText() === '😀😀one\ntwo\nthree' &&
+            editor.selection.active.character === 2,
+        );
+        assert.strictEqual(editor.selection.active.character, 2);
+        await vscode.commands.executeCommand('type', { text: 'x' });
+        await waitFor(() => editor.document.getText() === '😀one\ntwo\nthree');
+      },
+    ),
+  );
+
   await new Promise<void>((resolve, reject) => {
     mocha.run((failures) => {
       if (failures > 0) reject(new Error(`${failures} production bundle tests failed`));
