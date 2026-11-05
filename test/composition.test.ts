@@ -41,7 +41,7 @@ suite('IME composition', () => {
   };
 
   setup(async () => {
-    await setupWorkspace({ fileContent: ['one', 'two', 'three'] });
+    await setupWorkspace({ fileContent: ['one', 'two', 'three'], forceNewFile: true });
     modeHandler = (await getAndUpdateModeHandler())!;
   });
 
@@ -258,5 +258,30 @@ suite('IME composition', () => {
     await command('compositionEnd');
     assertEqualLines(['你好one', '你好two', '你好three']);
     assertCursors([0, 2], [1, 2], [2, 2]);
+  });
+
+  test('replaces one character per composed emoji in Replace mode', async () => {
+    modeHandler.vimState.editor.selections = [new vscode.Selection(0, 0, 0, 0)];
+    modeHandler.syncCursors();
+    await modeHandler.handleKeyEvent('R');
+    await command('compositionStart');
+    await command('type', { text: '😀' });
+    await command('compositionEnd');
+    await command('type', { text: 'X' });
+    await modeHandler.handleKeyEvent('<Esc>');
+    assertEqualLines(['😀Xe', 'two', 'three']);
+    assert.strictEqual(modeHandler.vimState.cursorStopPosition.character, 2);
+  });
+
+  test('accepts a composed emoji as a counted r replacement', async () => {
+    modeHandler.vimState.editor.selections = [new vscode.Selection(0, 0, 0, 0)];
+    modeHandler.syncCursors();
+    await modeHandler.handleMultipleKeyEvents(['2', 'r']);
+    await command('compositionStart');
+    await command('type', { text: '😀' });
+    await command('compositionEnd');
+    assertEqualLines(['😀😀e', 'two', 'three']);
+    assert.strictEqual(modeHandler.vimState.currentMode, Mode.Normal);
+    assert.strictEqual(modeHandler.vimState.cursorStopPosition.character, 2);
   });
 });

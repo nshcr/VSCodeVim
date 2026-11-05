@@ -331,7 +331,13 @@ export async function activate(context: vscode.ExtensionContext, handleLocal: bo
             await vscode.commands.executeCommand('default:type', { text: args.text });
           }
         } else {
-          await mh.handleKeyEvent(args.text);
+          if (mh.vimState.currentMode === Mode.Replace) {
+            for (const character of args.text) {
+              await mh.handleKeyEvent(character);
+            }
+          } else {
+            await mh.handleKeyEvent(args.text);
+          }
         }
       }
     });
@@ -443,7 +449,7 @@ export async function activate(context: vscode.ExtensionContext, handleLocal: bo
             );
           }
         } else {
-          await mh.handleMultipleKeyEvents(text.split(''));
+          await mh.handleMultipleKeyEvents(Array.from(text));
         }
       }
       compositionState.reset();

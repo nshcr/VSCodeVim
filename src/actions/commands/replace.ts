@@ -60,7 +60,7 @@ export class ReplaceCharacter extends BaseCommand {
         type: 'replaceText',
         text: toReplace.repeat(timesToRepeat),
         range: new Range(position, endPos),
-        diff: PositionDiff.offset({ character: timesToRepeat - 1 }),
+        diff: PositionDiff.offset({ character: toReplace.length * (timesToRepeat - 1) }),
         manuallySetCursorPositions:
           vimState.dotCommandStatus === DotCommandStatus.Executing ? true : undefined,
       });
@@ -216,11 +216,16 @@ class ExitReplaceMode extends BaseCommand {
         .join('')
         .repeat(timesToRepeat - 1);
       vimState.recordedState.transformer.replace(
-        new Range(position, position.getRight(newText.length)),
+        new Range(
+          position,
+          position.getSurrogateAwareRight(vimState.document, [...newText].length),
+        ),
         newText,
       );
     } else {
-      vimState.cursorStopPosition = vimState.cursorStopPosition.getLeft();
+      vimState.cursorStopPosition = vimState.cursorStopPosition.getSurrogateAwareLeft(
+        vimState.document,
+      );
     }
 
     if (this.multicursorIndex === vimState.cursors.length - 1) {
@@ -254,7 +259,9 @@ class BackspaceInReplaceMode extends BaseCommand {
 
     if (changes.length === 0) {
       // If you backspace before the beginning of where you started to replace, just move the cursor back.
-      const newPosition = position.getLeftThroughLineBreaks();
+      const newPosition = position.isLineBeginning()
+        ? position.getLeftThroughLineBreaks()
+        : position.getSurrogateAwareLeft(vimState.document);
 
       vimState.modeData.replaceState.resetChanges(cursorIdx);
 
@@ -262,17 +269,18 @@ class BackspaceInReplaceMode extends BaseCommand {
       vimState.cursorStartPosition = newPosition;
     } else {
       const { before } = changes.pop()!;
+      const start = position.isLineBeginning()
+        ? position.getLeftThroughLineBreaks()
+        : position.getSurrogateAwareLeft(vimState.document);
       if (before === '') {
         // We've gone beyond the originally existing text; just backspace.
         // TODO: should this use a 'deleteLeft' transformation?
-        vimState.recordedState.transformer.delete(
-          new Range(position.getLeftThroughLineBreaks(), position),
-        );
+        vimState.recordedState.transformer.delete(new Range(start, position));
       } else {
         vimState.recordedState.transformer.replace(
-          new Range(position.getLeft(), position),
+          new Range(start, position),
           before,
-          PositionDiff.offset({ character: -1 }),
+          PositionDiff.offset({ character: -before.length }),
         );
       }
     }
@@ -303,14 +311,14 @@ class ReplaceInReplaceMode extends BaseCommand {
     const char = this.keysPressed[0];
     const isNewLineOrTab = char === '\n' || char === '<tab>';
 
-    const replaceRange = new Range(position, position.getRight());
+    const replaceRange = new Range(position, position.getSurrogateAwareRight(vimState.document));
 
     let before = vimState.document.getText(replaceRange);
     if (!position.isLineEnd(vimState.document) && !isNewLineOrTab) {
       vimState.recordedState.transformer.replace(
         replaceRange,
         char,
-        PositionDiff.offset({ character: 1 }),
+        PositionDiff.offset({ character: char.length }),
       );
     } else if (char === '<tab>') {
       vimState.recordedState.transformer.delete(replaceRange);
