@@ -9,7 +9,8 @@ import { StatusBar } from '../statusBar';
 import { getCurrentParagraphBeginning, getCurrentParagraphEnd } from '../textobject/paragraph';
 import { WordType } from '../textobject/word';
 import { reportSearch } from '../util/statusBarTextUtils';
-import { clamp, isHighSurrogate, isLowSurrogate } from '../util/util';
+import { nextVimCharacterIndex, previousVimCharacterIndex } from '../util/unicode';
+import { clamp } from '../util/util';
 import { SearchDirection } from '../vimscript/pattern';
 import { PairMatcher } from './../common/matching/matcher';
 import { QuoteMatcher } from './../common/matching/quoteMatcher';
@@ -667,36 +668,25 @@ export class MoveLeft extends BaseMovement {
   keys = [['h'], ['<left>'], ['<BS>'], ['<C-BS>'], ['<S-BS>']];
 
   public override async execAction(position: Position, vimState: VimState): Promise<Position> {
-    // TODO: Consider replacing with getSurrogateAwareLeft()
-    const getLeftWhile = (p: Position): Position => {
-      const line = vimState.document.lineAt(p.line).text;
-
-      if (p.character === 0) {
-        return p;
-      }
-      if (
-        isLowSurrogate(line.charCodeAt(p.character)) &&
-        isHighSurrogate(line.charCodeAt(p.character - 1))
-      ) {
-        p = p.getLeft();
-      }
-
-      const newPosition = p.getLeft();
-      if (
-        newPosition.character > 0 &&
-        isLowSurrogate(line.charCodeAt(newPosition.character)) &&
-        isHighSurrogate(line.charCodeAt(newPosition.character - 1))
-      ) {
-        return newPosition.getLeft();
-      } else {
-        return newPosition;
-      }
-    };
-    return shouldWrapKey(vimState.currentMode, this.keysPressed[0])
-      ? position.getLeftThroughLineBreaks(
-          [Mode.Insert, Mode.Replace].includes(vimState.currentMode),
-        )
-      : getLeftWhile(position);
+    // Vertical/native movements may leave a UTF-16 position inside a character.
+    // Move left from that character's start, rather than merely correcting it.
+    const line = vimState.document.lineAt(position.line).text;
+    if (position.character < line.length) {
+      position = new Position(
+        position.line,
+        previousVimCharacterIndex(line, nextVimCharacterIndex(line, position.character)),
+      );
+    }
+    if (!position.isLineBeginning()) {
+      return position.getSurrogateAwareLeft(vimState.document);
+    }
+    if (!shouldWrapKey(vimState.currentMode, this.keysPressed[0]) || position.line === 0) {
+      return position;
+    }
+    const previousLineEnd = position.getUp().getLineEnd();
+    return [Mode.Insert, Mode.Replace].includes(vimState.currentMode)
+      ? previousLineEnd
+      : previousLineEnd.getSurrogateAwareLeft(vimState.document);
   }
 }
 
@@ -705,27 +695,16 @@ export class MoveRight extends BaseMovement {
   keys = [['l'], ['<right>'], [' ']];
 
   public override async execAction(position: Position, vimState: VimState): Promise<Position> {
-    // TODO: Consider replacing with getSurrogateAwareRight()
-    const getRightWhile = (p: Position): Position => {
-      const line = vimState.document.lineAt(p.line).text;
-      const newPosition = p.getRight();
-      if (newPosition.character >= vimState.document.lineAt(newPosition.line).text.length) {
-        return newPosition;
-      }
-      if (
-        isLowSurrogate(line.charCodeAt(newPosition.character)) &&
-        isHighSurrogate(line.charCodeAt(p.character))
-      ) {
-        return newPosition.getRight();
-      } else {
-        return newPosition;
-      }
-    };
-    return shouldWrapKey(vimState.currentMode, this.keysPressed[0])
-      ? position.getRightThroughLineBreaks(
-          [Mode.Insert, Mode.Replace].includes(vimState.currentMode),
-        )
-      : getRightWhile(position);
+    const nextPosition = position.getSurrogateAwareRight(vimState.document);
+    const includeEol = [Mode.Insert, Mode.Replace].includes(vimState.currentMode);
+    if (
+      shouldWrapKey(vimState.currentMode, this.keysPressed[0]) &&
+      position.line < vimState.document.lineCount - 1 &&
+      (includeEol ? position : nextPosition).isLineEnd(vimState.document)
+    ) {
+      return new Position(position.line + 1, 0);
+    }
+    return nextPosition;
   }
 }
 

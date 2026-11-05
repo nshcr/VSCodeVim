@@ -548,7 +548,7 @@ class ActionDeleteChar extends BaseCommand {
     await new operator.DeleteOperator(this.multicursorIndex).run(
       vimState,
       position,
-      position.getRight(timesToRepeat - 1).getLeftIfEOL(),
+      position.getSurrogateAwareRight(vimState.document, timesToRepeat).getLeft(),
     );
 
     await vimState.setCurrentMode(Mode.Normal);
@@ -596,7 +596,7 @@ class ActionDeleteLastChar extends BaseCommand {
 
     await new operator.DeleteOperator(this.multicursorIndex).run(
       vimState,
-      position.getLeft(timesToRepeat),
+      position.getSurrogateAwareLeft(vimState.document, timesToRepeat),
       position.getLeft(),
     );
   }

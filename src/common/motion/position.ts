@@ -9,7 +9,8 @@ import {
   prevWordEnd,
   prevWordStart,
 } from '../../textobject/word';
-import { clamp, isHighSurrogate, isLowSurrogate } from '../../util/util';
+import { nextVimCharacterIndex, previousVimCharacterIndex } from '../../util/unicode';
+import { clamp } from '../../util/util';
 import { configuration } from './../../configuration/configuration';
 import { TextEditor } from './../../textEditor';
 
@@ -152,13 +153,13 @@ declare module 'vscode' {
     getUp(count?: number): Position;
 
     /**
-     * Like getRight(), but skips past surrogate pairs so the cursor never
-     * lands between the high and low surrogate of an emoji.
+     * Like getRight(), but skips complete surrogate pairs and any following
+     * composing marks, matching Vim character boundaries.
      */
     getSurrogateAwareRight(document: vscode.TextDocument, count?: number): Position;
     /**
-     * Like getLeft(), but skips past surrogate pairs so the cursor never
-     * lands between the high and low surrogate of an emoji.
+     * Like getLeft(), but skips complete surrogate pairs and their composing
+     * marks, matching Vim character boundaries.
      */
     getSurrogateAwareLeft(document: vscode.TextDocument, count?: number): Position;
 
@@ -334,20 +335,11 @@ Position.prototype.getSurrogateAwareRight = function (
   count = 1,
 ): Position {
   const line = document.lineAt(this.line).text;
-  // eslint-disable-next-line @typescript-eslint/no-this-alias
-  let pos: Position = this;
+  let character = this.character;
   for (let i = 0; i < count; i++) {
-    const prev = pos;
-    pos = pos.getRight();
-    if (
-      pos.character < line.length &&
-      isLowSurrogate(line.charCodeAt(pos.character)) &&
-      isHighSurrogate(line.charCodeAt(prev.character))
-    ) {
-      pos = pos.getRight();
-    }
+    character = nextVimCharacterIndex(line, character);
   }
-  return pos;
+  return new Position(this.line, character);
 };
 
 Position.prototype.getSurrogateAwareLeft = function (
@@ -356,19 +348,11 @@ Position.prototype.getSurrogateAwareLeft = function (
   count = 1,
 ): Position {
   const line = document.lineAt(this.line).text;
-  // eslint-disable-next-line @typescript-eslint/no-this-alias
-  let pos: Position = this;
+  let character = this.character;
   for (let i = 0; i < count; i++) {
-    pos = pos.getLeft();
-    if (
-      pos.character > 0 &&
-      isLowSurrogate(line.charCodeAt(pos.character)) &&
-      isHighSurrogate(line.charCodeAt(pos.character - 1))
-    ) {
-      pos = pos.getLeft();
-    }
+    character = previousVimCharacterIndex(line, character);
   }
-  return pos;
+  return new Position(this.line, character);
 };
 
 /**
@@ -535,7 +519,11 @@ Position.prototype.getLineEnd = function (this: Position): Position {
  * @returns a new Position one to the left if this Position is on the EOL. Otherwise, returns this position.
  */
 Position.prototype.getLeftIfEOL = function (this: Position): Position {
-  return this.character === TextEditor.getLineLength(this.line) ? this.getLeft() : this;
+  if (this.character !== TextEditor.getLineLength(this.line)) {
+    return this;
+  }
+  const document = vscode.window.activeTextEditor?.document;
+  return document ? this.getSurrogateAwareLeft(document) : this.getLeft();
 };
 
 /**

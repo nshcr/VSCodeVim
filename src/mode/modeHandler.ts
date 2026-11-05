@@ -965,12 +965,16 @@ export class ModeHandler implements vscode.Disposable, IModeHandler {
 
           if (cursor.start.character >= currentStartLineLength + offsetStartAllowed) {
             cursor = cursor.withNewStart(
-              cursor.start.withColumn(Math.max(currentStartLineLength - 1, 0)),
+              new Position(cursor.start.line, currentStartLineLength).getSurrogateAwareLeft(
+                this.vimState.document,
+              ),
             );
           }
           if (cursor.stop.character >= currentStopLineLength + offsetStopAllowed) {
             cursor = cursor.withNewStop(
-              cursor.stop.withColumn(Math.max(currentStopLineLength - 1, 0)),
+              new Position(cursor.stop.line, currentStopLineLength).getSurrogateAwareLeft(
+                this.vimState.document,
+              ),
             );
           }
         }
