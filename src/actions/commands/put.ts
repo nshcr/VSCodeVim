@@ -12,6 +12,7 @@ import { StatusBar } from '../../statusBar';
 import { TextEditor } from '../../textEditor';
 import { Transformation } from '../../transformations/transformations';
 import { reportLinesChanged } from '../../util/statusBarTextUtils';
+import { previousVimCharacterIndex } from '../../util/unicode';
 import { BaseCommand, RegisterAction } from '../base';
 
 function firstNonBlankChar(text: string): number {
@@ -50,7 +51,12 @@ abstract class BasePutCommand extends BaseCommand {
       vimState.currentMode === Mode.CommandlineInProgress ? Mode.Normal : vimState.currentMode;
     const registerMode = this.getRegisterMode(register);
 
-    const replaceRange = this.getReplaceRange(mode, vimState.cursor, registerMode);
+    const replaceRange = this.getReplaceRange(
+      mode,
+      vimState.cursor,
+      registerMode,
+      vimState.document,
+    );
 
     let text = this.getRegisterText(mode, register, count);
     if (this.shouldAdjustIndent(mode, registerMode)) {
@@ -319,6 +325,7 @@ abstract class BasePutCommand extends BaseCommand {
     mode: Mode,
     cursor: Cursor,
     registerMode: RegisterMode,
+    document: TextDocument,
   ): vscode.Range;
 
   protected abstract adjustLinewiseRegisterText(mode: Mode, text: string): string;
@@ -340,12 +347,16 @@ class PutCommand extends BasePutCommand {
     return register.registerMode;
   }
 
-  protected getReplaceRange(mode: Mode, cursor: Cursor, registerMode: RegisterMode): vscode.Range {
+  protected getReplaceRange(
+    mode: Mode,
+    cursor: Cursor,
+    registerMode: RegisterMode,
+    document: TextDocument,
+  ): vscode.Range {
     if (mode === Mode.Normal) {
       let pos: Position;
       if (registerMode === RegisterMode.CharacterWise || registerMode === RegisterMode.BlockWise) {
-        // TODO: Use getSurrogateAwareRight() to fix `xp` transpose on surrogate pairs (#3070)
-        pos = cursor.stop.getRight();
+        pos = cursor.stop.getSurrogateAwareRight(document);
       } else if (registerMode === RegisterMode.LineWise) {
         pos = cursor.stop.getLineEnd();
       } else {
@@ -354,7 +365,7 @@ class PutCommand extends BasePutCommand {
       return new vscode.Range(pos, pos);
     } else if (mode === Mode.Visual) {
       const [start, end] = sorted(cursor.start, cursor.stop);
-      return new vscode.Range(start, end.getRight());
+      return new vscode.Range(start, end.getSurrogateAwareRight(document));
     } else if (mode === Mode.VisualLine) {
       const [start, end] = sorted(cursor.start, cursor.stop);
       return new vscode.Range(start.getLineBegin(), end.getLineEnd());
@@ -379,6 +390,7 @@ class PutCommand extends BasePutCommand {
   }
 
   protected getCursorPosition({
+    document,
     mode,
     replaceRange,
     registerMode,
@@ -393,7 +405,15 @@ class PutCommand extends BasePutCommand {
         } else if (returnToInsertAfterCommand) {
           return rangeStart.advancePositionByText(text);
         } else {
-          return rangeStart.advancePositionByText(text).getLeft();
+          // The document still contains the old text, so find the last Vim
+          // character in the resulting prefix. A register containing only
+          // composing marks can attach to the character before the put.
+          if (text.length === 0) {
+            return rangeStart.getLeft();
+          }
+          const prefix =
+            document.lineAt(rangeStart.line).text.slice(0, rangeStart.character) + text;
+          return rangeStart.with({ character: previousVimCharacterIndex(prefix, prefix.length) });
         }
       } else if (registerMode === RegisterMode.LineWise) {
         return new Position(rangeStart.line + 1, firstNonBlankChar(text));
@@ -441,6 +461,7 @@ class PutBeforeCommand extends PutCommand {
     mode: Mode,
     cursor: Cursor,
     registerMode: RegisterMode,
+    document: TextDocument,
   ): vscode.Range {
     if (mode === Mode.Normal) {
       if (registerMode === RegisterMode.CharacterWise || registerMode === RegisterMode.BlockWise) {
@@ -452,7 +473,7 @@ class PutBeforeCommand extends PutCommand {
       }
     }
 
-    return super.getReplaceRange(mode, cursor, registerMode);
+    return super.getReplaceRange(mode, cursor, registerMode, document);
   }
 
   protected override getCursorPosition({
