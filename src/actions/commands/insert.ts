@@ -221,9 +221,17 @@ export class ExitInsertMode extends BaseCommand {
     void vscode.commands.executeCommand('closeParameterHints');
     void vscode.commands.executeCommand('editor.action.inlineSuggest.hide');
 
-    vimState.cursors = vimState.cursors.map((x) => x.withNewStop(x.stop.getLeft()));
+    const previousCharacterLength = Math.max(
+      1,
+      position.character - position.getSurrogateAwareLeft(vimState.document).character,
+    );
+    vimState.cursors = vimState.cursors.map((x) =>
+      x.withNewStop(x.stop.getSurrogateAwareLeft(vimState.document)),
+    );
     if (vimState.returnToInsertAfterCommand && position.character !== 0) {
-      vimState.cursors = vimState.cursors.map((x) => x.withNewStop(x.stop.getRight()));
+      vimState.cursors = vimState.cursors.map((x) =>
+        x.withNewStop(x.stop.getSurrogateAwareRight(vimState.document)),
+      );
     }
 
     const lastActionBeforeEsc =
@@ -302,7 +310,7 @@ export class ExitInsertMode extends BaseCommand {
           // If this is the last transform, move cursor back one character
           const positionDiff =
             i === vimState.recordedState.count - 2
-              ? PositionDiff.offset({ character: -1 })
+              ? PositionDiff.offset({ character: -previousCharacterLength })
               : PositionDiff.identity();
 
           // Add a transform containing the change
