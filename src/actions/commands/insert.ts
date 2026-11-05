@@ -221,6 +221,9 @@ export class ExitInsertMode extends BaseCommand {
   public override async exec(position: Position, vimState: VimState): Promise<void> {
     void vscode.commands.executeCommand('closeParameterHints');
     void vscode.commands.executeCommand('editor.action.inlineSuggest.hide');
+    if (!vimState.returnToInsertAfterCommand) {
+      await vscode.commands.executeCommand('leaveSnippet');
+    }
 
     const previousCharacterLength = Math.max(
       1,
