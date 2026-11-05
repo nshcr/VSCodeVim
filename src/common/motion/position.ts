@@ -28,6 +28,8 @@ enum PositionDiffType {
   ObeyStartOfLine,
   /** Brings the Position to the end of the line */
   EndOfLine,
+  /** Offsets the native UTF-16 document offset, including line endings. */
+  DocumentOffset,
 }
 
 /**
@@ -53,6 +55,10 @@ export class PositionDiff {
   /** Offsets both the Position's line and character */
   public static offset({ line = 0, character = 0 }): PositionDiff {
     return new PositionDiff(PositionDiffType.Offset, line, character);
+  }
+
+  public static offsetInDocument(offset: number): PositionDiff {
+    return new PositionDiff(PositionDiffType.DocumentOffset, 0, offset);
   }
 
   /** Sets the Position's line and character exactly */
@@ -93,6 +99,8 @@ export class PositionDiff {
         return `[ Diff: ObeyStartOfLine ${this.line} ]`;
       case PositionDiffType.EndOfLine:
         return `[ Diff: EndOfLine ${this.line} ]`;
+      case PositionDiffType.DocumentOffset:
+        return `[ Diff: DocumentOffset ${this.character} ]`;
       default:
         this.type satisfies never;
         throw new Error(`Unknown PositionDiffType: ${this.type}`);
@@ -275,6 +283,9 @@ Position.prototype.add = function (
 ): Position {
   if (diff.type === PositionDiffType.ExactPosition) {
     return new Position(diff.line, diff.character);
+  }
+  if (diff.type === PositionDiffType.DocumentOffset) {
+    return document.positionAt(document.offsetAt(this) + diff.character);
   }
 
   const resultLine = clamp(this.line + diff.line, 0, document.lineCount - 1);

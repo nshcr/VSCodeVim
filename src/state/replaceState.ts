@@ -3,6 +3,8 @@ import { Position } from 'vscode';
 type ReplaceModeChange = {
   before: string;
   after: string;
+  // A native selection can span more than one Vim character or line.
+  replacedSelection?: boolean;
 };
 
 /**

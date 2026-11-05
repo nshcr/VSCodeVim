@@ -1,4 +1,4 @@
-import { Position, Range } from 'vscode';
+import { commands, EndOfLine, Position, Range } from 'vscode';
 import { Cursor } from '../../common/motion/cursor';
 import { PositionDiff, sorted } from '../../common/motion/position';
 import { DotCommandStatus, Mode, visualBlockGetTopLeftPosition } from '../../mode/mode';
@@ -243,6 +243,7 @@ class ExitReplaceMode extends BaseCommand {
     }
 
     if (this.multicursorIndex === vimState.cursors.length - 1) {
+      await commands.executeCommand('leaveSnippet');
       await vimState.setCurrentMode(Mode.Normal);
     }
   }
@@ -269,6 +270,17 @@ class BackspaceInReplaceMode extends BaseCommand {
     }
 
     const cursorIdx = this.multicursorIndex ?? 0;
+    // BaseCommand iterates in cursor order; the native primary selection may
+    // be last in the document, so its array index is not a cursor index.
+    const selection = vimState.editor.selections.find(
+      (native) =>
+        native.anchor.isEqual(vimState.cursorStartPosition) && native.active.isEqual(position),
+    );
+    if (selection && !selection.isEmpty) {
+      vimState.modeData.replaceState.resetChanges(cursorIdx);
+      vimState.recordedState.transformer.delete(selection);
+      return;
+    }
     const changes = vimState.modeData.replaceState.getChanges(cursorIdx);
 
     if (changes.length === 0) {
@@ -282,7 +294,18 @@ class BackspaceInReplaceMode extends BaseCommand {
       vimState.cursorStopPosition = newPosition;
       vimState.cursorStartPosition = newPosition;
     } else {
-      const { before } = changes.pop()!;
+      const { before, after, replacedSelection } = changes.pop()!;
+      if (replacedSelection) {
+        const selectionStart = vimState.document.positionAt(
+          vimState.document.offsetAt(position) - after.length,
+        );
+        vimState.recordedState.transformer.replace(
+          new Range(selectionStart, position),
+          before,
+          PositionDiff.offsetInDocument(-before.length),
+        );
+        return;
+      }
       const start = position.isLineBeginning()
         ? position.getLeftThroughLineBreaks()
         : position.getSurrogateAwareLeft(vimState.document);
@@ -324,6 +347,33 @@ class ReplaceInReplaceMode extends BaseCommand {
 
     const char = this.keysPressed[0];
     const isNewLineOrTab = char === '\n' || char === '<tab>';
+
+    const cursorIdx = this.multicursorIndex ?? 0;
+    const selection = vimState.editor.selections.find(
+      (native) =>
+        native.anchor.isEqual(vimState.cursorStartPosition) && native.active.isEqual(position),
+    );
+    if (selection && !selection.isEmpty) {
+      // Consume a native typing range once, then resume ordinary character
+      // replacement. Starting a new selected range also starts a new BS span.
+      vimState.modeData.replaceState.resetChanges(cursorIdx);
+      if (char === '<tab>') {
+        vimState.recordedState.transformer.vscodeCommand('tab');
+      } else {
+        const after = char === '\n' && vimState.document.eol === EndOfLine.CRLF ? '\r\n' : char;
+        vimState.recordedState.transformer.replace(
+          selection,
+          char,
+          PositionDiff.offsetInDocument(selection.isReversed ? after.length : 0),
+        );
+        vimState.modeData.replaceState.getChanges(cursorIdx).push({
+          before: vimState.document.getText(selection),
+          after,
+          replacedSelection: true,
+        });
+      }
+      return;
+    }
 
     const replaceRange = new Range(position, position.getSurrogateAwareRight(vimState.document));
 

@@ -26,6 +26,7 @@ import { IModeHandler, executeTransformations } from '../transformations/execute
 import { Dot, isTextTransformation } from '../transformations/transformations';
 import { SearchDecorations, getDecorationsForSearchMatchRanges } from '../util/decorationUtils';
 import { Logger } from '../util/logger';
+import { areSelectionArraysEqual } from '../util/selections';
 import { SpecialKeys } from '../util/specialKeys';
 import { scrollView } from '../util/util';
 import { VSCodeContext } from '../util/vscodeContext';
@@ -188,6 +189,15 @@ export class ModeHandler implements vscode.Disposable, IModeHandler {
       // might close or change to other document
       return;
     }
+    if (
+      e.kind !== vscode.TextEditorSelectionChangeKind.Mouse &&
+      !areSelectionArraysEqual(e.selections, e.textEditor.selections)
+    ) {
+      // A queued native event may describe a range that has already changed,
+      // e.g. an input caret delivered after Escape moved it left. Replaying it
+      // would rewind Vim's cursor or restore an obsolete placeholder selection.
+      return;
+    }
     const selection = e.selections[0];
     Logger.debug(
       `Selection change: ${selection.anchor.toString()}, ${selection.active}, SelectionsLength: ${
@@ -195,20 +205,31 @@ export class ModeHandler implements vscode.Disposable, IModeHandler {
       }`,
     );
 
-    // If our previous cursors are not included on any of the current selections, then a snippet
-    // must have been inserted.
-    const isSnippetSelectionChange = () => {
-      return e.selections.every((s) => {
-        return this.vimState.cursors.every((c) => !s.contains(new vscode.Range(c.start, c.stop)));
-      });
-    };
+    if (
+      (this.vimState.currentMode === Mode.Insert || this.vimState.currentMode === Mode.Replace) &&
+      e.kind !== vscode.TextEditorSelectionChangeKind.Mouse
+    ) {
+      // The public selection event does not identify snippet sessions. Keep
+      // native command/keyboard selections as typing ranges in input modes,
+      // including linked placeholders and Tab stops touching the old cursor.
+      // Normal-mode command selections and mouse selections retain their
+      // existing handling below; geometry is not used to guess snippet origin.
+      this.syncNativeInputSelections(e.selections);
+      return this.updateView({ drawSelection: false, revealRange: false });
+    }
 
     if (
       (e.selections.length !== this.vimState.cursors.length || this.vimState.isMultiCursor) &&
       this.vimState.currentMode !== Mode.VisualBlock
     ) {
       const allowedModes = [Mode.Normal];
-      if (!isSnippetSelectionChange()) {
+      // Input modes reach this branch only for mouse events. Preserve the
+      // existing mouse-selection promotion rule independently of snippets.
+      if (
+        e.selections.some((s) =>
+          this.vimState.cursors.some((c) => s.contains(new vscode.Range(c.start, c.stop))),
+        )
+      ) {
         allowedModes.push(Mode.Insert, Mode.Replace);
       }
       // Number of selections changed, make sure we know about all of them still
@@ -243,10 +264,6 @@ export class ModeHandler implements vscode.Disposable, IModeHandler {
           // This 'Command' kind is triggered when using a command like 'editor.action.smartSelect.grow'
           // but it is also triggered when we set the 'editor.selections' on 'updateView'.
           const allowedModes = [Mode.Normal, Mode.Visual, Mode.VisualLine];
-          if (!isSnippetSelectionChange()) {
-            // if we just inserted a snippet then don't allow insert modes to go to visual mode
-            allowedModes.push(Mode.Insert, Mode.Replace);
-          }
           if (allowedModes.includes(this.vimState.currentMode)) {
             // Since the selections weren't ignored then probably we got change of selection from
             // a command, so we need to update our start and stop positions. This is where commands
@@ -613,10 +630,37 @@ export class ModeHandler implements vscode.Disposable, IModeHandler {
     }
   }
 
+  private syncNativeInputSelections(selections: readonly vscode.Selection[]): void {
+    const cursors = this.vimState.cursors;
+    if (
+      areSelectionArraysEqual(
+        selections,
+        cursors.map((cursor) => new vscode.Selection(cursor.start, cursor.stop)),
+      )
+    ) {
+      return;
+    }
+    if (this.vimState.modeData.mode === Mode.Replace) {
+      // Native navigation starts a new replacement span. Backspace must not
+      // restore characters typed at an earlier placeholder or caret position.
+      for (let index = 0; index < Math.max(cursors.length, selections.length); index++) {
+        this.vimState.modeData.replaceState.resetChanges(index);
+      }
+    }
+    this.vimState.cursors = selections.map((selection) => Cursor.fromSelection(selection));
+    this.vimState.desiredColumn = selections[0].active.character;
+  }
+
   private async handleKeyAsAnAction(key: string): Promise<boolean> {
     if (vscode.window.activeTextEditor !== this.vimState.editor) {
       Logger.warn('Current window is not active');
       return false;
+    }
+
+    if (this.vimState.currentMode === Mode.Insert || this.vimState.currentMode === Mode.Replace) {
+      // A native selection event may still be queued or have been suppressed
+      // during an edit. Read the actual typing ranges before consuming a key.
+      this.syncNativeInputSelections(this.vimState.editor.selections);
     }
 
     // Catch any text change not triggered by us (example: tab completion).

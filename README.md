@@ -449,6 +449,8 @@ Here are all the modes used by VSCodeVim:
 | OperatorPendingMode   |
 | Disabled              |
 
+In Insert and Replace modes, selections created by VS Code commands (including snippet placeholders and smart selection) stay in the current input mode. Typing replaces the selected range; snippet Tab and Shift-Tab continue to navigate placeholders. In Normal mode, command-driven smart selections still enter Visual mode. Press `Esc` to end snippet editing and return to Normal mode.
+
 When rebinding keys in [keybindings.json](https://code.visualstudio.com/docs/getstarted/keybindings) using ["when clause context"](https://code.visualstudio.com/api/references/when-clause-contexts), it can be useful to know in which mode vim currently is. For example to write a "when clause" that checks if vim is currently in normal mode or visual mode it is possible to write the following:
 
 ```json

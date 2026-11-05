@@ -607,6 +607,177 @@ export async function run(): Promise<void> {
     ),
   );
 
+  const openInsertSnippet = async (snippet: string): Promise<vscode.TextEditor> => {
+    const editor = await openEditor('');
+    await vscode.commands.executeCommand('type', { text: 'i' });
+    await waitFor(() => editor.options.cursorStyle === vscode.TextEditorCursorStyle.Line);
+    await editor.insertSnippet(new vscode.SnippetString(snippet));
+    return editor;
+  };
+
+  const openReplaceSnippet = async (snippet: string): Promise<vscode.TextEditor> => {
+    const editor = await openEditor('0');
+    await vscode.commands.executeCommand('type', { text: 'R1' });
+    await waitFor(
+      () => editor.document.getText() === '1' && editor.selection.active.character === 1,
+    );
+    assert.ok(await editor.edit((builder) => builder.delete(new vscode.Range(0, 0, 0, 1))));
+    await editor.insertSnippet(new vscode.SnippetString(snippet));
+    return editor;
+  };
+
+  mocha.suite.addTest(
+    new Mocha.Test(
+      'Production bundle: linked placeholders at the input caret remain typing ranges',
+      async () => {
+        const editor = await openInsertSnippet('${1:default}\n${1}$0');
+        await vscode.commands.executeCommand('type', { text: 'A' });
+        await vscode.commands.executeCommand('type', { text: 'B' });
+        await waitFor(
+          () =>
+            editor.document.getText() === 'AB\nAB' &&
+            editor.selections.length === 2 &&
+            editor.options.cursorStyle === vscode.TextEditorCursorStyle.Line,
+        );
+      },
+    ),
+  );
+
+  mocha.suite.addTest(
+    new Mocha.Test(
+      'Production bundle: adjacent snippet slots survive forward and backward Tab',
+      async () => {
+        const editor = await openInsertSnippet('prefix ${1:first}${2:second}$0');
+        await vscode.commands.executeCommand('type', { text: 'one' });
+        await waitFor(() => editor.document.getText() === 'prefix onesecond');
+        await vscode.commands.executeCommand('jumpToNextSnippetPlaceholder');
+        await vscode.commands.executeCommand('type', { text: 'two' });
+        await waitFor(() => editor.document.getText() === 'prefix onetwo');
+        await vscode.commands.executeCommand('jumpToPrevSnippetPlaceholder');
+        await vscode.commands.executeCommand('type', { text: 'X' });
+        await waitFor(
+          () =>
+            editor.document.getText() === 'prefix Xtwo' &&
+            editor.options.cursorStyle === vscode.TextEditorCursorStyle.Line,
+        );
+      },
+    ),
+  );
+
+  mocha.suite.addTest(
+    new Mocha.Test(
+      'Production bundle: snippet navigation keeps both native input cursors',
+      async () => {
+        const editor = await openEditor('\n');
+        await vscode.commands.executeCommand('type', { text: 'i' });
+        await waitFor(() => editor.options.cursorStyle === vscode.TextEditorCursorStyle.Line);
+        editor.selections = [new vscode.Selection(0, 0, 0, 0), new vscode.Selection(1, 0, 1, 0)];
+        await editor.insertSnippet(new vscode.SnippetString('${1:left} ${2:right}$0'));
+        await vscode.commands.executeCommand('type', { text: 'L' });
+        await waitFor(() => editor.document.getText() === 'L right\nL right');
+        await vscode.commands.executeCommand('jumpToNextSnippetPlaceholder');
+        await vscode.commands.executeCommand('type', { text: 'R' });
+        await waitFor(
+          () =>
+            editor.document.getText() === 'L R\nL R' &&
+            editor.selections.length === 2 &&
+            editor.options.cursorStyle === vscode.TextEditorCursorStyle.Line,
+        );
+      },
+    ),
+  );
+
+  mocha.suite.addTest(
+    new Mocha.Test(
+      'Production bundle: smart selection follows the current editing mode',
+      async () => {
+        const editor = await openEditor('someword tail');
+        await vscode.commands.executeCommand('type', { text: 'i' });
+        await waitFor(() => editor.options.cursorStyle === vscode.TextEditorCursorStyle.Line);
+        editor.selection = new vscode.Selection(0, 3, 0, 3);
+        await vscode.commands.executeCommand('editor.action.smartSelect.grow');
+        await waitFor(() => editor.document.getText(editor.selection) === 'someword');
+        await vscode.commands.executeCommand('type', { text: 'X' });
+        await waitFor(
+          () =>
+            editor.document.getText() === 'X tail' &&
+            editor.options.cursorStyle === vscode.TextEditorCursorStyle.Line,
+        );
+        await vscode.commands.executeCommand('extension.vim_escape');
+        await waitFor(
+          () =>
+            editor.selection.active.character === 0 &&
+            editor.options.cursorStyle === vscode.TextEditorCursorStyle.Block,
+        );
+        await vscode.commands.executeCommand('editor.action.smartSelect.grow');
+        await vscode.commands.executeCommand('type', { text: 'd' });
+        await waitFor(() => editor.document.getText() === ' tail');
+      },
+    ),
+  );
+
+  mocha.suite.addTest(
+    new Mocha.Test(
+      'Production bundle: linked Replace ranges restore text and both caret positions',
+      async () => {
+        const editor = await openReplaceSnippet('${1:first} ${1} suffix$0');
+        await vscode.commands.executeCommand('type', { text: 'X' });
+        await waitFor(
+          () =>
+            editor.document.getText() === 'X X suffix' &&
+            editor.selections.length === 2 &&
+            editor.selections.every(
+              (selection, index) =>
+                selection.isEmpty && selection.active.character === [1, 3][index],
+            ),
+        );
+        await vscode.commands.executeCommand('extension.vim_backspace');
+        await waitFor(
+          () =>
+            editor.document.getText() === 'first first suffix' &&
+            editor.selections.length === 2 &&
+            editor.selections.every(
+              (selection, index) =>
+                selection.isEmpty && selection.active.character === [0, 6][index],
+            ),
+        );
+      },
+    ),
+  );
+
+  mocha.suite.addTest(
+    new Mocha.Test(
+      'Production bundle: Replace maps primary-last typing ranges to their cursors',
+      async () => {
+        const editor = await openReplaceSnippet('abc\nwxyz');
+        editor.selections = [new vscode.Selection(1, 0, 1, 3), new vscode.Selection(0, 0, 0, 0)];
+        await vscode.commands.executeCommand('type', { text: 'X' });
+        await waitFor(() => editor.document.getText() === 'Xbc\nXz');
+        await vscode.commands.executeCommand('extension.vim_backspace');
+        await waitFor(() => editor.document.getText() === 'abc\nwxyz');
+        assert.ok(
+          editor.selections.every(
+            (selection) => selection.isEmpty && selection.active.character === 0,
+          ),
+        );
+      },
+    ),
+  );
+
+  mocha.suite.addTest(
+    new Mocha.Test('Production bundle: Escape ends Replace snippet navigation', async () => {
+      const editor = await openReplaceSnippet('prefix ${1:first} ${2:second} suffix$0');
+      await vscode.commands.executeCommand('type', { text: 'X' });
+      await waitFor(() => editor.document.getText() === 'prefix X second suffix');
+      await vscode.commands.executeCommand('extension.vim_escape');
+      await waitFor(() => editor.selection.active.character === 7);
+      await vscode.commands.executeCommand('jumpToNextSnippetPlaceholder');
+      await vscode.commands.executeCommand('type', { text: 'hliQ' });
+      await vscode.commands.executeCommand('extension.vim_escape');
+      await waitFor(() => editor.document.getText() === 'prefix QX second suffix');
+    }),
+  );
+
   await new Promise<void>((resolve, reject) => {
     mocha.run((failures) => {
       if (failures > 0) reject(new Error(`${failures} production bundle tests failed`));

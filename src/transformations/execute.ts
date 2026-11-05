@@ -255,8 +255,14 @@ export async function executeTransformations(
   }
 
   let selections;
-  if (vimState.currentMode === Mode.Insert) {
-    // Insert mode selections do not need to be modified
+  if (vimState.currentMode === Mode.Replace) {
+    // BaseCommand assigns transformation indices in anchor order, while VS
+    // Code preserves the user's primary-selection order across the edit.
+    selections = [...vimState.editor.selections].sort((a, b) =>
+      a.anchor.isAfter(b.anchor) ? 1 : -1,
+    );
+  } else if (vimState.currentMode === Mode.Insert) {
+    // Native input ranges are half-open, including Replace placeholders.
     selections = vimState.editor.selections;
   } else {
     selections = vimState.editor.selections.map((sel) => {
@@ -283,7 +289,7 @@ export async function executeTransformations(
         diffs.push(vimState.recordedState.operatorPositionDiff);
       }
 
-      return diffs.reduce(
+      const adjustedCursor = diffs.reduce(
         (cursor, diff) =>
           new Cursor(
             cursor.start.add(vimState.document, diff),
@@ -291,6 +297,9 @@ export async function executeTransformations(
           ),
         Cursor.fromSelection(sel),
       );
+      return vimState.currentMode === Mode.Replace
+        ? Cursor.atPosition(adjustedCursor.stop)
+        : adjustedCursor;
     });
 
     vimState.recordedState.operatorPositionDiff = undefined;

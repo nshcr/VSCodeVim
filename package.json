@@ -114,12 +114,12 @@
       {
         "key": "tab",
         "command": "extension.vim_tab",
-        "when": "editorTextFocus && vim.active && vim.mode != 'Insert' && !inDebugRepl && !inlineEditIsVisible"
+        "when": "editorTextFocus && vim.active && vim.mode != 'Insert' && !inDebugRepl && !inlineEditIsVisible && (vim.mode != 'Replace' || !inSnippetMode || !hasNextTabstop)"
       },
       {
         "key": "shift+tab",
         "command": "extension.vim_shift+tab",
-        "when": "editorTextFocus && vim.active && vim.mode != 'Insert' && !inDebugRepl"
+        "when": "editorTextFocus && vim.active && vim.mode != 'Insert' && !inDebugRepl && (vim.mode != 'Replace' || !inSnippetMode || !hasPrevTabstop)"
       },
       {
         "key": "left",
