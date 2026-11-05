@@ -14,6 +14,9 @@ export class InputMethodSwitcherConfigurationValidator implements IConfiguration
       return Promise.resolve(result);
     }
 
+    const obtainCommand = this.getRawCmd(inputMethodConfig.obtainIMCmd ?? '');
+    const switchCommand = this.getRawCmd(inputMethodConfig.switchIMCmd);
+
     if (!inputMethodConfig.switchIMCmd.includes('{im}')) {
       result.append({
         level: 'error',
@@ -22,12 +25,15 @@ export class InputMethodSwitcherConfigurationValidator implements IConfiguration
       });
     }
 
-    if (inputMethodConfig.obtainIMCmd === undefined || inputMethodConfig.obtainIMCmd === '') {
+    if (
+      inputMethodConfig.obtainIMCmd === undefined ||
+      inputMethodConfig.obtainIMCmd.trim() === ''
+    ) {
       result.append({
         level: 'error',
         message: 'vim.autoSwitchInputMethod.obtainIMCmd is empty.',
       });
-    } else if (!(await existsAsync(this.getRawCmd(inputMethodConfig.obtainIMCmd)))) {
+    } else if (!obtainCommand || !(await existsAsync(obtainCommand))) {
       result.append({
         level: 'error',
         message: `Unable to find ${inputMethodConfig.obtainIMCmd}. Check your 'vim.autoSwitchInputMethod.obtainIMCmd' in VSCode setting.`,
@@ -39,7 +45,7 @@ export class InputMethodSwitcherConfigurationValidator implements IConfiguration
         level: 'error',
         message: 'vim.autoSwitchInputMethod.defaultIM is empty.',
       });
-    } else if (!(await existsAsync(this.getRawCmd(inputMethodConfig.switchIMCmd)))) {
+    } else if (!switchCommand || !(await existsAsync(switchCommand))) {
       result.append({
         level: 'error',
         message: `Unable to find ${inputMethodConfig.switchIMCmd}. Check your 'vim.autoSwitchInputMethod.switchIMCmd' in VSCode setting.`,
@@ -54,7 +60,9 @@ export class InputMethodSwitcherConfigurationValidator implements IConfiguration
   }
 
   private getRawCmd(cmd: string): string {
-    return cmd.split(' ')[0];
+    // The command is run by a shell, so a quoted executable may contain spaces.
+    const executable = /^\s*(?:"([^"]+)"|'([^']+)'|([^\s"']+))(?=\s|$)/.exec(cmd);
+    return executable?.[1] ?? executable?.[2] ?? executable?.[3] ?? '';
   }
 }
 
