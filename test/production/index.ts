@@ -77,6 +77,109 @@ export async function run(): Promise<void> {
     }),
   );
 
+  mocha.suite.addTest(
+    new Mocha.Test(
+      'Production bundle: replaces preedit after the caret and commits emoji',
+      async () => {
+        const editor = await openEditor();
+        await vscode.commands.executeCommand('type', { text: 'i' });
+        await waitFor(() => editor.options.cursorStyle === vscode.TextEditorCursorStyle.Line);
+        editor.selections = [new vscode.Selection(0, 0, 0, 0), new vscode.Selection(1, 0, 1, 0)];
+        await vscode.commands.executeCommand('compositionStart');
+        await vscode.commands.executeCommand('compositionType', {
+          text: 'hh提示',
+          replacePrevCharCnt: 0,
+          replaceNextCharCnt: 0,
+          positionDelta: -2,
+        });
+        await vscode.commands.executeCommand('compositionType', {
+          text: '😀',
+          replacePrevCharCnt: 2,
+          replaceNextCharCnt: 2,
+          positionDelta: 0,
+        });
+        await vscode.commands.executeCommand('compositionEnd');
+        await vscode.commands.executeCommand('type', { text: '!' });
+        await waitFor(() => editor.document.getText() === '😀!one\n😀!two\nthree');
+      },
+    ),
+  );
+
+  mocha.suite.addTest(
+    new Mocha.Test(
+      'Production bundle: cancelled preedit after the caret stays deleted',
+      async () => {
+        const editor = await openEditor();
+        await vscode.commands.executeCommand('type', { text: 'i' });
+        await vscode.commands.executeCommand('compositionStart');
+        await vscode.commands.executeCommand('type', { text: '\u200b' });
+        await vscode.commands.executeCommand('compositionType', {
+          text: '',
+          replacePrevCharCnt: 0,
+          replaceNextCharCnt: 0,
+          positionDelta: -1,
+        });
+        await vscode.commands.executeCommand('compositionType', {
+          text: '',
+          replacePrevCharCnt: 0,
+          replaceNextCharCnt: 1,
+          positionDelta: 0,
+        });
+        await vscode.commands.executeCommand('compositionEnd');
+        await vscode.commands.executeCommand('type', { text: '!' });
+        await waitFor(() => editor.document.getText() === '!one\ntwo\nthree');
+      },
+    ),
+  );
+
+  for (const reversed of [false, true]) {
+    mocha.suite.addTest(
+      new Mocha.Test(
+        `Production bundle: multi-character typing replaces ${reversed ? 'backward' : 'forward'} selection`,
+        async () => {
+          const editor = await openEditor();
+          await vscode.commands.executeCommand('type', { text: 'i' });
+          await waitFor(() => editor.options.cursorStyle === vscode.TextEditorCursorStyle.Line);
+          editor.selection = reversed
+            ? new vscode.Selection(0, 3, 0, 0)
+            : new vscode.Selection(0, 0, 0, 3);
+          await vscode.commands.executeCommand('type', { text: '你好' });
+          await vscode.commands.executeCommand('type', { text: '!' });
+          await waitFor(() => editor.document.getText() === '你好!\ntwo\nthree');
+          assert.ok(editor.selection.isEmpty);
+        },
+      ),
+    );
+  }
+
+  mocha.suite.addTest(
+    new Mocha.Test(
+      'Production bundle: Chinese composition executes in the Ex command line',
+      async () => {
+        const editor = await openEditor();
+        for (const text of ':s/one/') await vscode.commands.executeCommand('type', { text });
+        await vscode.commands.executeCommand('compositionStart');
+        await vscode.commands.executeCommand('type', { text: 'zhongwen' });
+        await vscode.commands.executeCommand('compositionType', {
+          text: '中文',
+          replacePrevCharCnt: 8,
+          replaceNextCharCnt: 0,
+          positionDelta: -1,
+        });
+        await vscode.commands.executeCommand('compositionType', {
+          text: '',
+          replacePrevCharCnt: 0,
+          replaceNextCharCnt: 0,
+          positionDelta: 1,
+        });
+        await vscode.commands.executeCommand('compositionEnd');
+        await vscode.commands.executeCommand('type', { text: '/' });
+        await vscode.commands.executeCommand('vim.remap', { after: ['<Enter>'] });
+        await waitFor(() => editor.document.getText() === '中文\ntwo\nthree');
+      },
+    ),
+  );
+
   await new Promise<void>((resolve, reject) => {
     mocha.run((failures) => {
       if (failures > 0) reject(new Error(`${failures} production bundle tests failed`));
