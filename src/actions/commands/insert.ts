@@ -518,10 +518,10 @@ class InsertDigraph extends BaseCommand {
   public override async exec(position: Position, vimState: VimState): Promise<void> {
     const digraph = this.keysPressed.slice(1, 3).join('');
     const reverseDigraph = digraph.split('').reverse().join('');
-    let charCodes = (DefaultDigraphs.get(digraph) ||
-      DefaultDigraphs.get(reverseDigraph) ||
-      configuration.digraphs[digraph] ||
-      configuration.digraphs[reverseDigraph])[1];
+    let charCodes = (configuration.digraphs[digraph] ||
+      DefaultDigraphs.get(digraph) ||
+      configuration.digraphs[reverseDigraph] ||
+      DefaultDigraphs.get(reverseDigraph))[1];
     if (!(charCodes instanceof Array)) {
       charCodes = [charCodes];
     }
