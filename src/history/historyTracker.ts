@@ -167,7 +167,7 @@ class HistoryStep {
   /**
    * Collapse individual character changes into larger blocks of changes
    */
-  public merge(document: vscode.TextDocument): void {
+  public merge(): void {
     if (this.changes.length < 2) {
       return;
     }
@@ -189,19 +189,28 @@ class HistoryStep {
         }
       }
 
-      const intersect = current.afterRange.intersection(next.beforeRange);
-      if (intersect) {
-        const [first, second] = current.start.isBeforeOrEqual(next.start)
-          ? [current, next]
-          : [next, current];
-        const intersectLength =
-          document.offsetAt(intersect.end) - document.offsetAt(intersect.start);
+      if (current.afterRange.end.isEqual(next.start)) {
+        // The second edit starts immediately after the first edit's result.
+        // These spans are adjacent in both the original and resulting text.
         current = DocumentChange.replace(
-          first.start,
-          first.before + second.before.slice(intersectLength),
-          first.after.slice(0, first.after.length - intersectLength) + second.after,
+          current.start,
+          current.before + next.before,
+          current.after + next.after,
+        );
+      } else if (current.start.isEqual(next.start) && current.after === next.before) {
+        // The second edit replaces the entire result of the first edit.
+        current = DocumentChange.replace(current.start, current.before, next.after);
+      } else if (next.beforeRange.end.isEqual(current.start)) {
+        // The second edit is immediately before the first edit's result.
+        current = DocumentChange.replace(
+          next.start,
+          next.before + current.before,
+          next.after + current.after,
         );
       } else {
+        // Overlapping edits use coordinates from successive document states.
+        // Keep their order instead of intersecting them in the final document,
+        // which can lose text when an edit falls inside an earlier insertion.
         merged.push(current);
         current = next;
       }
@@ -775,7 +784,7 @@ export class HistoryTracker {
         this.nextStepCursorsAtStart = undefined;
       }
 
-      currentHistoryStep.merge(this.vimState.document);
+      currentHistoryStep.merge();
 
       currentHistoryStep.marks = this.updateAndReturnMarks(this.vimState.document);
 
@@ -927,7 +936,8 @@ export class HistoryTracker {
 
       const newStep = new HistoryStep({
         marks: this.undoStack.getCurrentMarkList(),
-        changes: changesToUndo.map((change) => change.reversed()).reverse(),
+        // changesToUndo already follows the order in which the edits above ran.
+        changes: changesToUndo.map((change) => change.reversed()),
         cameFromU: true,
       });
       this.nextStepCursorsAtStart = [Cursor.atPosition(lastChange.start)];
